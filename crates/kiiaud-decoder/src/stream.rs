@@ -58,10 +58,8 @@ pub fn open_http_stream(
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Result<(Box<dyn MediaSource>, Option<String>)> {
-    let timeout = Duration::from_secs(15);
     let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout)
+        .connect_timeout(Duration::from_secs(10))
         .user_agent("kiiaud/0.1")
         .build()
         .map_err(|e| {

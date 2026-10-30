@@ -34,17 +34,22 @@ Allows `kiiaud` to act as an audiophile-grade Squeezebox endpoint (analogous to 
 ### Workflow & Protocol (SlimProto on TCP port 3483)
 1. **Discovery & Hello (`HELO`)**:
    - Connects to LMS on port 3483.
-   - Sends a `HELO` packet advertising capabilities: MAC address, supported formats (FLAC, PCM, DSD/DoP), buffer sizes.
-2. **Stream Command (`strm`)**:
+   - Sends a `HELO` packet advertising capabilities: MAC address, supported formats (FLAC, PCM, DSD/DoP), buffer sizes, and flags (`CanHTTPS=1,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1,ModelName={player_name}`).
+2. **Stream Command (`strm`) & Response Protocol**:
    - LMS commands the player to start streaming a track:
-     - `strm-s`: Start streaming audio data over an HTTP or raw TCP connection from LMS.
-     - `strm-p`: Pause playback.
-     - `strm-u`: Unpause / resume playback.
-     - `strm-q`: Flush buffers and stop.
+     - `strm-s`: Start streaming audio data over an HTTP or raw TCP connection from LMS. The adapter immediately acknowledges with `STMf` (flush), `STMc` (connected), and a `RESP` frame containing HTTP 200 headers to clear the server's `connecting` lock.
+     - `strm-p`: Pause playback (`STMp`).
+     - `strm-u`: Unpause / resume playback (`STMr`).
+     - `strm-q`: Flush buffers and stop (`STMf`).
+     - `strm-t`: Timestamp query, echoed back via `STMt` with the requested timestamp.
 3. **Status Reporting (`stat`)**:
-   - Sends periodic `stat` updates containing elapsed time, buffer occupancy, and playback events.
+   - Sends `STMs` once audio output starts (`TrackStarted`), `STMd` (DECODE_READY) on end of track for gapless transitions, and `STMu` on underrun/stop.
+   - Reports progressive `bytes_received` and 1-second interval `STMt` during active playback (`Play`), maintaining clock synchronization without idle spamming.
 4. **Audio Data**:
    - Audio chunks delivered from LMS are decoded and queued into `kiiaud`'s playback pipeline for bit-perfect output to ALSA.
+
+> [!NOTE]
+> For a detailed technical post-mortem on LMS connection stability and SlimProto sequence alignment with Squeezelite, refer to [TROUBLESHOOTING-LMS.md](TROUBLESHOOTING-LMS.md).
 
 ---
 

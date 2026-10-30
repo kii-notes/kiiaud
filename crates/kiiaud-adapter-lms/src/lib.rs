@@ -26,7 +26,7 @@ use tokio::net::TcpStream;
 
 /// Device ID 12 = `squeezelite` in SlimProto `HELO`.
 const SLIMPROTO_DEVICE_ID_SQUEEZELITE: u8 = 12;
-const SLIMPROTO_REVISION: u8 = 2;
+const SLIMPROTO_REVISION: u8 = 0;
 
 /// Start the LMS SlimProto adapter loop with automatic reconnect on network failure (`NFR-007`).
 pub async fn run_lms_adapter(config: LmsAdapterConfig, engine: EngineHandle) -> Result<()> {
@@ -68,7 +68,7 @@ async fn connect_and_run_session(
     let start_epoch = Instant::now();
 
     // 1. Send HELO packet with hardware-informed capabilities
-    let helo_pkt = build_helo_packet(&config.mac_address, max_sample_rate, dsd_supported);
+    let helo_pkt = build_helo_packet(&config.mac_address, &config.player_name, max_sample_rate, dsd_supported);
     stream
         .write_all(&helo_pkt)
         .await
@@ -90,7 +90,7 @@ async fn connect_and_run_session(
     );
 
     let mut event_rx = engine.subscribe();
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    let mut tick_1s = tokio::time::interval(Duration::from_secs(1));
     let mut len_buf = [0u8; 2];
 
     loop {
@@ -112,27 +112,31 @@ async fn connect_and_run_session(
             Ok(ev) = event_rx.recv() => {
                 match ev {
                     PlaybackEvent::TrackStarted { .. } => {
+                        // Squeezelite sends STMs only once when audio output starts
                         let stat = build_stat_packet(b"STMs", engine, start_epoch, 0);
                         let _ = stream.write_all(&stat).await;
                     }
                     PlaybackEvent::TrackEnded(_) => {
-                        // Notify LMS that decoder (`STMd`) and output (`STMu`) finished current track
+                        // Notify LMS that decoder finished reading current track data (DECODE_READY)
+                        // so LMS can transition to the next track in gapless/crossfade mode.
                         let stmd = build_stat_packet(b"STMd", engine, start_epoch, 0);
                         let _ = stream.write_all(&stmd).await;
+                    }
+                    PlaybackEvent::StateChanged(PlayerState::Stop) => {
+                        // Output underrun / stopped
                         let stmu = build_stat_packet(b"STMu", engine, start_epoch, 0);
                         let _ = stream.write_all(&stmu).await;
                     }
                     _ => {}
                 }
             }
-            _ = heartbeat.tick() => {
-                // Periodically send STMt heartbeat to keep SlimProto session alive on LMS,
-                // report jiffies / elapsed time, and prevent connection timeout when idle.
-                let stat = build_stat_packet(b"STMt", engine, start_epoch, 0);
-                stream
-                    .write_all(&stat)
-                    .await
-                    .map_err(|e| format!("heartbeat STAT write failed: {e}"))?;
+            _ = tick_1s.tick() => {
+                // Squeezelite sends STMt once per second during active playback to report elapsed position.
+                // When idle/stopped, client does not send periodic STMt; LMS queries with strm 't' when needed.
+                if engine.status().state == PlayerState::Play {
+                    let stat = build_stat_packet(b"STMt", engine, start_epoch, 0);
+                    let _ = stream.write_all(&stat).await;
+                }
             }
         }
     }
@@ -161,13 +165,18 @@ pub fn resolve_hardware_capabilities(
 
 /// Build client-to-server `HELO` packet:
 /// `[4B "HELO"][4B length BE][1B dev_id][1B rev][6B mac][16B uuid][2B wlan_ch][8B bytes_rx][2B lang][capabilities...]`
-pub fn build_helo_packet(mac: &[u8; 6], max_sample_rate: u32, dsd_supported: bool) -> Vec<u8> {
+pub fn build_helo_packet(
+    mac: &[u8; 6],
+    player_name: &str,
+    max_sample_rate: u32,
+    dsd_supported: bool,
+) -> Vec<u8> {
     let mut codecs = "wvp,flc,wav,aif,pcm,mp3,ogg,ops".to_string();
     if dsd_supported {
         codecs.push_str(",dsf,dff");
     }
     let caps = format!(
-        "Model=squeezelite,ModelName=kiiaud,AccuratePlayPoints=1,HasDigitalOut=1,MaxSampleRate={max_sample_rate},{codecs}"
+        "CanHTTPS=1,Model=squeezelite,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1,ModelName={player_name},MaxSampleRate={max_sample_rate},{codecs}"
     );
     let body_len = 36 + caps.len();
     let mut pkt = Vec::with_capacity(8 + body_len);
@@ -179,8 +188,21 @@ pub fn build_helo_packet(mac: &[u8; 6], max_sample_rate: u32, dsd_supported: boo
     pkt.extend_from_slice(&[0u8; 16]); // UUID
     pkt.extend_from_slice(&0u16.to_be_bytes()); // wlan channel list
     pkt.extend_from_slice(&0u64.to_be_bytes()); // bytes received
-    pkt.extend_from_slice(b"EN"); // language
+    pkt.extend_from_slice(&[0u8; 2]); // language / padding
     pkt.extend_from_slice(caps.as_bytes());
+    pkt
+}
+
+/// Build client-to-server `RESP` packet acknowledging HTTP response headers.
+/// In SlimProto, this notifies LMS that the HTTP connection was successfully established,
+/// clearing the server's `connecting` flag (`_http_response_handler`).
+pub fn build_resp_packet(headers: &str) -> Vec<u8> {
+    let header_bytes = headers.as_bytes();
+    let body_len = header_bytes.len();
+    let mut pkt = Vec::with_capacity(8 + body_len);
+    pkt.extend_from_slice(b"RESP");
+    pkt.extend_from_slice(&(body_len as u32).to_be_bytes());
+    pkt.extend_from_slice(header_bytes);
     pkt
 }
 
@@ -208,9 +230,16 @@ pub fn build_stat_packet(
     let elapsed_secs = st.elapsed.as_secs() as u32;
     let jiffies = start_epoch.elapsed().as_millis() as u32;
 
+    // Report monotonic progressive bytes received (approx 176.4 KB/s for stereo audio)
+    // so LMS streaming flow tracker knows data is flowing normally.
+    let bytes_received = match st.state {
+        PlayerState::Play => (elapsed_ms as u64).saturating_mul(176),
+        _ => 0,
+    };
+
     let (stream_buf_fullness, output_buf_fullness) = match st.state {
-        PlayerState::Play => (2 * 1024 * 1024u32, 512 * 1024u32),
-        PlayerState::Pause => (2 * 1024 * 1024u32, 0u32),
+        PlayerState::Play => (1024 * 1024u32, 256 * 1024u32),
+        PlayerState::Pause => (1024 * 1024u32, 0u32),
         PlayerState::Stop => (0u32, 0u32),
     };
 
@@ -221,8 +250,8 @@ pub fn build_stat_packet(
     body.push(0); // 6: mas_mode
     body.extend_from_slice(&(4 * 1024 * 1024u32).to_be_bytes()); // 7..11: stream buffer size (4 MiB)
     body.extend_from_slice(&stream_buf_fullness.to_be_bytes()); // 11..15: stream buffer fullness
-    body.extend_from_slice(&0u64.to_be_bytes()); // 15..23: bytes received
-    body.extend_from_slice(&100u16.to_be_bytes()); // 23..25: wireless signal strength
+    body.extend_from_slice(&bytes_received.to_be_bytes()); // 15..23: bytes received
+    body.extend_from_slice(&0xffffu16.to_be_bytes()); // 23..25: signal strength (0xffff = Ethernet/wired in Squeezelite)
     body.extend_from_slice(&jiffies.to_be_bytes()); // 25..29: jiffies
     body.extend_from_slice(&(1024 * 1024u32).to_be_bytes()); // 29..33: output buffer size
     body.extend_from_slice(&output_buf_fullness.to_be_bytes()); // 33..37: output buffer fullness
@@ -297,13 +326,25 @@ async fn handle_server_packet(
                         })
                         .await;
 
-                    for code in [b"STMc", b"STMh", b"STMs"] {
-                        let pkt = build_stat_packet(code, engine, start_epoch, 0);
-                        stream
-                            .write_all(&pkt)
-                            .await
-                            .map_err(|e| format!("STAT write failed: {e}"))?;
-                    }
+                    // Flush buffers, acknowledge stream connection, and acknowledge HTTP response headers
+                    // without sending premature STMs (which will be sent once audio output starts).
+                    let stmf = build_stat_packet(b"STMf", engine, start_epoch, 0);
+                    stream
+                        .write_all(&stmf)
+                        .await
+                        .map_err(|e| format!("STMf write failed: {e}"))?;
+
+                    let stmc = build_stat_packet(b"STMc", engine, start_epoch, 0);
+                    stream
+                        .write_all(&stmc)
+                        .await
+                        .map_err(|e| format!("STMc write failed: {e}"))?;
+
+                    let resp = build_resp_packet("HTTP/1.0 200 OK\r\nContent-Type: audio/x-flac\r\n\r\n");
+                    stream
+                        .write_all(&resp)
+                        .await
+                        .map_err(|e| format!("RESP write failed: {e}"))?;
                 }
                 b'p' => {
                     let _ = engine.send(PlaybackCommand::Pause).await;
@@ -417,20 +458,31 @@ mod tests {
     #[test]
     fn test_helo_packet_structure() {
         let mac = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let pkt = build_helo_packet(&mac, 192_000, false);
+        let pkt = build_helo_packet(&mac, "kiiaud", 192_000, false);
         assert_eq!(&pkt[0..4], b"HELO");
         let len = u32::from_be_bytes([pkt[4], pkt[5], pkt[6], pkt[7]]) as usize;
         assert_eq!(pkt.len(), 8 + len);
         assert_eq!(pkt[8], SLIMPROTO_DEVICE_ID_SQUEEZELITE);
         assert_eq!(&pkt[10..16], &mac);
         let caps = String::from_utf8_lossy(&pkt[8 + 36..]);
+        assert!(caps.contains("ModelName=kiiaud"));
         assert!(caps.contains("MaxSampleRate=192000"));
         assert!(!caps.contains("dsf"));
 
-        let pkt_dsd = build_helo_packet(&mac, 768_000, true);
+        let pkt_dsd = build_helo_packet(&mac, "kiiaud", 768_000, true);
         let caps_dsd = String::from_utf8_lossy(&pkt_dsd[8 + 36..]);
         assert!(caps_dsd.contains("MaxSampleRate=768000"));
         assert!(caps_dsd.contains("dsf,dff"));
+    }
+
+    #[test]
+    fn test_build_resp_packet() {
+        let headers = "HTTP/1.0 200 OK\r\nContent-Type: audio/x-flac\r\n\r\n";
+        let pkt = build_resp_packet(headers);
+        assert_eq!(&pkt[0..4], b"RESP");
+        let len = u32::from_be_bytes([pkt[4], pkt[5], pkt[6], pkt[7]]) as usize;
+        assert_eq!(len, headers.len());
+        assert_eq!(&pkt[8..], headers.as_bytes());
     }
 
     #[test]
