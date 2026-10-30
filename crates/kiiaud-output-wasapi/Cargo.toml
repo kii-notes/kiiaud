@@ -1,0 +1,25 @@
+[package]
+name = "kiiaud-output-wasapi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bit-perfect WASAPI Exclusive Mode audio output backend for kiiaud on Windows"
+
+[dependencies]
+kiiaud-core = { workspace = true }
+kiiaud-output = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+] }
+

@@ -1,0 +1,1304 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>kiiaud — Bit-Perfect Audio Endpoint</title>
+  <style>
+    :root {
+      --bg-base: #0b0d12;
+      --bg-panel: #121620;
+      --bg-card: #181d2a;
+      --bg-hover: #21283a;
+      --border: #262f45;
+      --text-main: #eef2f9;
+      --text-muted: #8e9bb5;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.18);
+      --gold: #f59e0b;
+      --gold-glow: rgba(245, 158, 11, 0.18);
+      --green: #10b981;
+      --green-glow: rgba(16, 185, 129, 0.18);
+      --danger: #ef4444;
+      --radius: 12px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: radial-gradient(circle at top right, #131b2e 0%, var(--bg-base) 65%);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 20px 16px 48px;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px 20px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 20px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-logo {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-weight: 800;
+      font-size: 18px;
+      color: #06101e;
+      box-shadow: 0 0 18px var(--accent-glow);
+    }
+
+    .brand-title h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-title p {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .header-badges {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .badge.live {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: var(--green-glow);
+      color: #34d399;
+    }
+
+    .badge.bitperfect {
+      border-color: rgba(245, 158, 11, 0.45);
+      background: var(--gold-glow);
+      color: #fbbf24;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      display: inline-block;
+    }
+
+    /* Navigation Tabs */
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+      overflow-x: auto;
+    }
+
+    .tab-btn {
+      background: var(--bg-panel);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      padding: 9px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13.5px;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .tab-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-main);
+    }
+
+    .tab-btn.active {
+      background: var(--accent-glow);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .tab-pane {
+      display: none;
+    }
+
+    .tab-pane.active {
+      display: block;
+    }
+
+    /* Grid Layouts */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 860px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    }
+
+    .panel-title {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Now Playing Card */
+    .now-playing-box {
+      background: linear-gradient(160deg, #171f32 0%, #111520 100%);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px;
+      margin-bottom: 18px;
+    }
+
+    .np-state-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      background: var(--bg-hover);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .np-title {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .np-artist {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .np-uri {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: #64748b;
+      word-break: break-all;
+      background: rgba(0, 0, 0, 0.25);
+      padding: 6px 10px;
+      border-radius: 6px;
+    }
+
+    /* Seek Bar */
+    .seek-container {
+      margin: 18px 0;
+    }
+
+    .seek-slider {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+      height: 6px;
+    }
+
+    .seek-times {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* Transport Controls */
+    .transport-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .btn {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      padding: 9px 15px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn:hover {
+      background: var(--bg-hover);
+      border-color: #3b496b;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #06121e;
+      border-color: var(--accent);
+      font-weight: 700;
+    }
+
+    .btn-primary:hover {
+      background: #7dd3fc;
+      border-color: #7dd3fc;
+    }
+
+    .btn-danger {
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.35);
+    }
+
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.15);
+    }
+
+    .btn-sm {
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+
+    .options-row {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .opt-pill {
+      font-size: 11.5px;
+      font-family: var(--font-mono);
+      padding: 5px 11px;
+      border-radius: 999px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .opt-pill.on {
+      background: var(--accent-glow);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    /* Signal Path Pipeline */
+    .signal-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 10px;
+      position: relative;
+    }
+
+    .signal-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: var(--bg-hover);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .signal-body h4 {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    .signal-body p {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    /* Queue Table */
+    .queue-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 460px;
+      overflow-y: auto;
+    }
+
+    .queue-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .queue-item.current {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .queue-item-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .queue-pos {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      min-width: 24px;
+    }
+
+    .queue-meta {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .queue-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .queue-sub {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Forms & Inputs */
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+    }
+
+    .input, select {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 9px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: var(--font-mono);
+    }
+
+    .input:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      margin: 10px 0;
+      cursor: pointer;
+    }
+
+    /* File Browser */
+    .browser-list {
+      max-height: 360px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .browser-entry {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 12.5px;
+    }
+
+    .browser-entry-name {
+      font-family: var(--font-mono);
+      cursor: pointer;
+      word-break: break-all;
+      flex: 1;
+    }
+
+    .browser-entry-name:hover {
+      color: var(--accent);
+    }
+
+    /* Toast / Error Banner */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #1e293b;
+      border: 1px solid var(--accent);
+      color: var(--text-main);
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      display: none;
+      z-index: 999;
+    }
+
+    .error-banner {
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-family: var(--font-mono);
+      margin-bottom: 16px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="brand-logo">KII</div>
+        <div class="brand-title">
+          <h1>
+            <span id="hdr-daemon-name">kiiaud</span>
+          </h1>
+          <p>Bit-Perfect Network Audio Endpoint &bull; Port 7110</p>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span class="badge live" id="sse-badge">
+          <span class="dot"></span> <span id="sse-text">LIVE SSE</span>
+        </span>
+        <span class="badge bitperfect" id="bp-badge">
+          BIT-PERFECT: ON
+        </span>
+        <span class="badge" id="fmt-badge">
+          IDLE
+        </span>
+      </div>
+    </header>
+
+    <div id="error-banner" class="error-banner"></div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('tab-playing', this)">
+        &#9654; Now Playing &amp; Signal Path
+      </button>
+      <button class="tab-btn" onclick="switchTab('tab-queue', this)">
+        &#9776; Queue &amp; Local Browser (<span id="tab-queue-count">0</span>)
+      </button>
+      <button class="tab-btn" onclick="switchTab('tab-config', this)">
+        &#9881; DAC Hardware &amp; Config
+      </button>
+    </div>
+
+    <!-- TAB 1: NOW PLAYING & SIGNAL PATH -->
+    <div id="tab-playing" class="tab-pane active">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">
+            <span>Transport &amp; Now Playing</span>
+            <span id="np-pos-indicator" style="font-family: var(--font-mono)">Queue #--</span>
+          </div>
+
+          <div class="now-playing-box">
+            <div class="np-state-tag" id="np-state">STOPPED</div>
+            <div class="np-title" id="np-title">No track active</div>
+            <div class="np-artist" id="np-artist">Ready to receive audio from Jellyfin, LMS, MPD, CLI or WebUI</div>
+            <div class="np-uri" id="np-uri">—</div>
+
+            <div class="seek-container">
+              <input
+                type="range"
+                id="seek-slider"
+                class="seek-slider"
+                min="0"
+                max="100"
+                step="0.5"
+                value="0"
+                oninput="onSeekInput(this.value)"
+                onchange="onSeekCommit(this.value)"
+              />
+              <div class="seek-times">
+                <span id="time-elapsed">00:00</span>
+                <span id="time-duration">00:00</span>
+              </div>
+            </div>
+
+            <div class="transport-row">
+              <button class="btn" onclick="sendCmd({action:'prev'})">&#9198; Prev</button>
+              <button class="btn btn-primary" id="btn-play-pause" onclick="sendCmd({action:'toggle'})">
+                &#9654; Play / Pause
+              </button>
+              <button class="btn" onclick="sendCmd({action:'stop'})">&#9209; Stop</button>
+              <button class="btn" onclick="sendCmd({action:'next'})">&#9197; Next</button>
+            </div>
+
+            <div class="options-row">
+              <button class="opt-pill" id="opt-repeat" onclick="toggleOption('repeat')">Repeat: OFF</button>
+              <button class="opt-pill" id="opt-random" onclick="toggleOption('random')">Random: OFF</button>
+              <button class="opt-pill" id="opt-single" onclick="toggleOption('single')">Single: OFF</button>
+              <button class="opt-pill" id="opt-consume" onclick="toggleOption('consume')">Consume: OFF</button>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top: 14px; margin-bottom: 0;">
+            <label>Quick Play / Stream URL or Local File Path</label>
+            <div class="input-row">
+              <input
+                type="text"
+                id="quick-uri"
+                class="input"
+                placeholder="/music/Album/01.wv or http://..."
+              />
+              <button class="btn btn-primary" onclick="quickPlay(true)">Play Now</button>
+              <button class="btn" onclick="quickPlay(false)">+ Queue</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Signal Path Panel -->
+        <div class="panel">
+          <div class="panel-title">
+            <span>Audiophile Signal Path</span>
+            <span id="sig-quality" style="color: var(--gold); font-family: var(--font-mono)">LOSSLESS</span>
+          </div>
+
+          <div class="signal-step">
+            <div class="signal-icon">1</div>
+            <div class="signal-body">
+              <h4>Source Stream</h4>
+              <p id="sig-source">Idle (Waiting for stream or local file)</p>
+            </div>
+          </div>
+
+          <div class="signal-step">
+            <div class="signal-icon">2</div>
+            <div class="signal-body">
+              <h4>Decoder Engine (Symphonia DSD / WavPack / PCM)</h4>
+              <p id="sig-decoder">No active decoder stream</p>
+            </div>
+          </div>
+
+          <div class="signal-step">
+            <div class="signal-icon">3</div>
+            <div class="signal-body">
+              <h4>DSP &amp; Volume Pipeline</h4>
+              <p id="sig-dsp">Bit-Perfect Passthrough (Resampling OFF, Software Volume OFF)</p>
+            </div>
+          </div>
+
+          <div class="signal-step">
+            <div class="signal-icon">4</div>
+            <div class="signal-body">
+              <h4>Hardware Output Sink</h4>
+              <p id="sig-output">ALSA Direct</p>
+            </div>
+          </div>
+
+          <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);">
+            <div class="panel-title" style="margin-bottom: 10px;">
+              <span>Active Protocol Adapters</span>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;" id="adapter-pills"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: QUEUE & FILE BROWSER -->
+    <div id="tab-queue" class="tab-pane">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">
+            <span>In-Memory Runtime Queue</span>
+            <button class="btn btn-sm btn-danger" onclick="sendCmd({action:'clear'})">Clear Queue</button>
+          </div>
+          <div id="queue-list" class="queue-list"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            <span>Local Filesystem Browser</span>
+            <button class="btn btn-sm" onclick="enqueueAllInCurrentDir()">+ Enqueue Folder</button>
+          </div>
+          <div class="input-row" style="margin-bottom: 10px;">
+            <input type="text" id="browse-path" class="input" value="/music" />
+            <button class="btn" onclick="browseDir(document.getElementById('browse-path').value)">Go</button>
+            <button class="btn" onclick="browseParent()">Up</button>
+          </div>
+          <div id="browser-list" class="browser-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: HARDWARE & CONFIGURATION -->
+    <div id="tab-config" class="tab-pane">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">
+            <span>ALSA DAC &amp; Bit-Perfect Output</span>
+            <button class="btn btn-sm" onclick="refreshAlsaDevices()">&#8635; Scan ALSA DACs</button>
+          </div>
+
+          <div class="form-group">
+            <label>Detected ALSA Hardware Playback Devices (Click to fill)</label>
+            <select id="alsa-select" onchange="onSelectAlsaDevice(this.value)">
+              <option value="">-- Select detected ALSA hardware device --</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Output Backend (`alsa` or `mock`)</label>
+            <input type="text" id="cfg-backend" class="input" />
+          </div>
+
+          <div class="form-group">
+            <label>ALSA Device Identifier (`hw:CARD=...,DEV=0`)</label>
+            <input type="text" id="cfg-device" class="input" />
+          </div>
+
+          <div class="form-group">
+            <label>DSD Transport Mode</label>
+            <select id="cfg-dsd-mode">
+              <option value="auto">auto (Try Native DSD first, fallback to DoP)</option>
+              <option value="native">native (Require Native DSD_U32_BE/LE)</option>
+              <option value="dop">dop (Require DSD over PCM)</option>
+            </select>
+          </div>
+
+          <label class="checkbox-row">
+            <input type="checkbox" id="cfg-bit-perfect" />
+            Enforce Bit-Perfect Transport (Disable ALSA resampling &amp; software volume)
+          </label>
+
+          <div class="grid-2" style="gap: 12px; margin-top: 10px;">
+            <div class="form-group">
+              <label>Buffer Time (ms)</label>
+              <input type="number" id="cfg-buffer-ms" class="input" />
+            </div>
+            <div class="form-group">
+              <label>Period Time (ms)</label>
+              <input type="number" id="cfg-period-ms" class="input" />
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            <span>Daemon &amp; Protocol Adapters (`kiiaud.toml`)</span>
+          </div>
+
+          <div class="form-group">
+            <label>Endpoint Daemon Name</label>
+            <input type="text" id="cfg-daemon-name" class="input" />
+          </div>
+
+          <div class="form-group">
+            <label>Allowed Local Music Roots (comma-separated, empty = allow any regular file)</label>
+            <input type="text" id="cfg-allowed-roots" class="input" placeholder="/music, /mnt/audio" />
+          </div>
+
+          <hr style="border: 0; border-top: 1px solid var(--border); margin: 14px 0;" />
+
+          <label class="checkbox-row">
+            <input type="checkbox" id="cfg-mpd-enabled" />
+            <strong>MPD Protocol Adapter</strong>
+          </label>
+          <div class="form-group">
+            <label>MPD Listen Address</label>
+            <input type="text" id="cfg-mpd-listen" class="input" />
+          </div>
+
+          <label class="checkbox-row">
+            <input type="checkbox" id="cfg-jf-enabled" />
+            <strong>Jellyfin "Play To" Adapter</strong>
+          </label>
+          <div class="grid-2" style="gap: 10px;">
+            <div class="form-group">
+              <label>Jellyfin Server URL</label>
+              <input type="text" id="cfg-jf-url" class="input" />
+            </div>
+            <div class="form-group">
+              <label>Jellyfin Device Name</label>
+              <input type="text" id="cfg-jf-name" class="input" />
+            </div>
+          </div>
+
+          <label class="checkbox-row">
+            <input type="checkbox" id="cfg-lms-enabled" />
+            <strong>LMS / Lyrion SlimProto Adapter (Squeezelite)</strong>
+          </label>
+          <div class="grid-2" style="gap: 10px;">
+            <div class="form-group">
+              <label>LMS Host / IP</label>
+              <input type="text" id="cfg-lms-host" class="input" />
+            </div>
+            <div class="form-group">
+              <label>Player Name</label>
+              <input type="text" id="cfg-lms-name" class="input" />
+            </div>
+          </div>
+
+          <div style="margin-top: 16px; display: flex; justify-content: flex-end; gap: 10px;">
+            <button class="btn" onclick="loadState(true)">Reset Changes</button>
+            <button class="btn btn-primary" onclick="saveConfig()">&#128190; Save to kiiaud.toml</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    let currentState = null;
+    let isSeeking = false;
+    let lastBrowseFiles = [];
+    let configLoadedOnce = false;
+
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.style.display = 'block';
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3200);
+    }
+
+    function switchTab(id, btn) {
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+      btn.classList.add('active');
+      if (id === 'tab-queue' && lastBrowseFiles.length === 0) {
+        browseDir(document.getElementById('browse-path').value);
+      }
+    }
+
+    function fmtTime(secs) {
+      if (secs == null || isNaN(secs) || secs < 0) return '00:00';
+      const total = Math.floor(secs);
+      const m = Math.floor(total / 60);
+      const s = total % 60;
+      return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+
+    async function sendCmd(payload) {
+      try {
+        const res = await fetch('/api/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+          showToast('Error: ' + (data.error || res.statusText));
+        } else {
+          await loadState(false);
+        }
+      } catch (e) {
+        showToast('Network error: ' + e.message);
+      }
+    }
+
+    function quickPlay(autostart) {
+      const input = document.getElementById('quick-uri');
+      const uri = input.value.trim();
+      if (!uri) return;
+      sendCmd({
+        action: autostart ? 'play_uri' : 'enqueue',
+        uri
+      });
+      showToast((autostart ? 'Playing: ' : 'Enqueued: ') + uri);
+    }
+
+    function toggleOption(opt) {
+      if (!currentState) return;
+      const st = currentState.status;
+      const nextVal = !st[opt];
+      sendCmd({ action: 'set_option', option: opt, value: nextVal });
+    }
+
+    function onSeekInput(val) {
+      isSeeking = true;
+      document.getElementById('time-elapsed').textContent = fmtTime(parseFloat(val));
+    }
+
+    function onSeekCommit(val) {
+      isSeeking = false;
+      sendCmd({ action: 'seek', secs: parseFloat(val) });
+    }
+
+    function renderState(data, populateConfigForm) {
+      currentState = data;
+      const st = data.status;
+      const cfg = data.config;
+
+      document.getElementById('hdr-daemon-name').textContent = cfg.daemon.name || 'kiiaud';
+      document.getElementById('bp-badge').textContent =
+        cfg.output.bit_perfect ? 'BIT-PERFECT: ON' : 'BIT-PERFECT: OFF';
+      document.getElementById('fmt-badge').textContent = data.format_badge || 'IDLE';
+
+      const errBanner = document.getElementById('error-banner');
+      if (st.last_error) {
+        errBanner.style.display = 'block';
+        errBanner.textContent = 'Last Playback Error: ' + st.last_error;
+      } else {
+        errBanner.style.display = 'none';
+      }
+
+      // Now Playing
+      document.getElementById('np-state').textContent = st.state.toUpperCase();
+      document.getElementById('np-pos-indicator').textContent =
+        st.current_pos != null ? `Track #${st.current_pos + 1} / ${st.queue_length}` : `Queue (${st.queue_length})`;
+
+      if (data.current_track) {
+        document.getElementById('np-title').textContent = data.current_track.title;
+        document.getElementById('np-artist').textContent =
+          data.current_track.artist || 'Direct Audio Stream / File';
+        document.getElementById('np-uri').textContent = data.current_track.uri;
+      } else {
+        document.getElementById('np-title').textContent = 'No track active';
+        document.getElementById('np-artist').textContent =
+          'Select a track from the Queue, Local Browser, or stream from Jellyfin / LMS / MPD';
+        document.getElementById('np-uri').textContent = '—';
+      }
+
+      const slider = document.getElementById('seek-slider');
+      const dur = data.duration_secs || 0;
+      const elap = data.elapsed_secs || 0;
+      slider.max = dur > 0 ? dur : 100;
+      if (!isSeeking) {
+        slider.value = elap;
+        document.getElementById('time-elapsed').textContent = fmtTime(elap);
+      }
+      document.getElementById('time-duration').textContent = dur > 0 ? fmtTime(dur) : '--:--';
+
+      // Options
+      ['repeat', 'random', 'single', 'consume'].forEach(k => {
+        const el = document.getElementById('opt-' + k);
+        const on = !!st[k];
+        el.classList.toggle('on', on);
+        el.textContent = k.charAt(0).toUpperCase() + k.slice(1) + ': ' + (on ? 'ON' : 'OFF');
+      });
+
+      // Signal Path
+      document.getElementById('sig-source').textContent = data.signal_path.source;
+      document.getElementById('sig-decoder').textContent = data.signal_path.decoder;
+      document.getElementById('sig-dsp').textContent = data.signal_path.dsp;
+      document.getElementById('sig-output').textContent = data.signal_path.output;
+
+      // Adapters
+      const pills = document.getElementById('adapter-pills');
+      pills.innerHTML = '';
+      const adapters = [
+        { name: 'WebUI', on: cfg.adapter.web.enabled, info: cfg.adapter.web.listen },
+        { name: 'MPD', on: cfg.adapter.mpd.enabled, info: cfg.adapter.mpd.listen },
+        { name: 'Jellyfin', on: cfg.adapter.jellyfin.enabled, info: cfg.adapter.jellyfin.device_name },
+        { name: 'LMS/SlimProto', on: cfg.adapter.lms.enabled, info: cfg.adapter.lms.player_name },
+        { name: 'Unix IPC', on: true, info: cfg.daemon.socket_path }
+      ];
+      adapters.forEach(a => {
+        const span = document.createElement('span');
+        span.className = 'badge ' + (a.on ? 'live' : '');
+        span.textContent = `${a.name}: ${a.on ? a.info : 'OFF'}`;
+        pills.appendChild(span);
+      });
+
+      // Queue
+      document.getElementById('tab-queue-count').textContent = data.queue.length;
+      const qList = document.getElementById('queue-list');
+      qList.innerHTML = '';
+      if (data.queue.length === 0) {
+        qList.innerHTML = '<div style="color: var(--text-muted); font-size: 13px;">Queue is empty. Add files from the browser or Quick Play box.</div>';
+      } else {
+        data.queue.forEach(item => {
+          const row = document.createElement('div');
+          const isCur = st.current_item && st.current_item.id === item.id;
+          row.className = 'queue-item' + (isCur ? ' current' : '');
+
+          const left = document.createElement('div');
+          left.className = 'queue-item-left';
+
+          const pos = document.createElement('div');
+          pos.className = 'queue-pos';
+          pos.textContent = isCur ? '▶' : `#${item.position + 1}`;
+
+          const meta = document.createElement('div');
+          meta.className = 'queue-meta';
+
+          const title = document.createElement('div');
+          title.className = 'queue-title';
+          title.textContent = item.title;
+
+          const sub = document.createElement('div');
+          sub.className = 'queue-sub';
+          sub.textContent = item.uri + (item.duration_secs ? ` • ${fmtTime(item.duration_secs)}` : '');
+
+          meta.appendChild(title);
+          meta.appendChild(sub);
+          left.appendChild(pos);
+          left.appendChild(meta);
+
+          const actions = document.createElement('div');
+          actions.style.display = 'flex';
+          actions.style.gap = '6px';
+
+          const playBtn = document.createElement('button');
+          playBtn.className = 'btn btn-sm';
+          playBtn.textContent = 'Play';
+          playBtn.onclick = () => sendCmd({ action: 'play_id', id: item.id });
+
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn btn-sm btn-danger';
+          delBtn.textContent = '✕';
+          delBtn.onclick = () => sendCmd({ action: 'remove_id', id: item.id });
+
+          actions.appendChild(playBtn);
+          actions.appendChild(delBtn);
+
+          row.appendChild(left);
+          row.appendChild(actions);
+          qList.appendChild(row);
+        });
+      }
+
+      // ALSA devices dropdown
+      if (data.alsa_devices) {
+        const sel = document.getElementById('alsa-select');
+        sel.innerHTML = '<option value="">-- Detected ALSA Hardware Devices (' + data.alsa_devices.length + ') --</option>';
+        data.alsa_devices.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.device_id;
+          opt.textContent = `${d.device_id} — ${d.name}`;
+          if (d.device_id === cfg.output.device) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+
+      if (populateConfigForm || !configLoadedOnce) {
+        configLoadedOnce = true;
+        document.getElementById('cfg-backend').value = cfg.output.backend;
+        document.getElementById('cfg-device').value = cfg.output.device;
+        document.getElementById('cfg-dsd-mode').value = cfg.output.dsd_mode;
+        document.getElementById('cfg-bit-perfect').checked = !!cfg.output.bit_perfect;
+        document.getElementById('cfg-buffer-ms').value = cfg.output.buffer_time_ms;
+        document.getElementById('cfg-period-ms').value = cfg.output.period_time_ms;
+
+        document.getElementById('cfg-daemon-name').value = cfg.daemon.name;
+        document.getElementById('cfg-allowed-roots').value = (cfg.security.allowed_roots || []).join(', ');
+
+        document.getElementById('cfg-mpd-enabled').checked = !!cfg.adapter.mpd.enabled;
+        document.getElementById('cfg-mpd-listen').value = cfg.adapter.mpd.listen;
+
+        document.getElementById('cfg-jf-enabled').checked = !!cfg.adapter.jellyfin.enabled;
+        document.getElementById('cfg-jf-url').value = cfg.adapter.jellyfin.server_url;
+        document.getElementById('cfg-jf-name').value = cfg.adapter.jellyfin.device_name;
+
+        document.getElementById('cfg-lms-enabled').checked = !!cfg.adapter.lms.enabled;
+        document.getElementById('cfg-lms-host').value = cfg.adapter.lms.server_host;
+        document.getElementById('cfg-lms-name').value = cfg.adapter.lms.player_name;
+      }
+    }
+
+    function onSelectAlsaDevice(val) {
+      if (val) {
+        document.getElementById('cfg-device').value = val;
+      }
+    }
+
+    async function refreshAlsaDevices() {
+      await loadState(false);
+      showToast('Scanned ALSA hardware devices');
+    }
+
+    async function saveConfig() {
+      if (!currentState) return;
+      const cfg = JSON.parse(JSON.stringify(currentState.config));
+      cfg.output.backend = document.getElementById('cfg-backend').value.trim();
+      cfg.output.device = document.getElementById('cfg-device').value.trim();
+      cfg.output.dsd_mode = document.getElementById('cfg-dsd-mode').value;
+      cfg.output.bit_perfect = document.getElementById('cfg-bit-perfect').checked;
+      cfg.output.buffer_time_ms = parseInt(document.getElementById('cfg-buffer-ms').value, 10) || 200;
+      cfg.output.period_time_ms = parseInt(document.getElementById('cfg-period-ms').value, 10) || 40;
+
+      cfg.daemon.name = document.getElementById('cfg-daemon-name').value.trim();
+      const rootsRaw = document.getElementById('cfg-allowed-roots').value;
+      cfg.security.allowed_roots = rootsRaw
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+
+      cfg.adapter.mpd.enabled = document.getElementById('cfg-mpd-enabled').checked;
+      cfg.adapter.mpd.listen = document.getElementById('cfg-mpd-listen').value.trim();
+
+      cfg.adapter.jellyfin.enabled = document.getElementById('cfg-jf-enabled').checked;
+      cfg.adapter.jellyfin.server_url = document.getElementById('cfg-jf-url').value.trim();
+      cfg.adapter.jellyfin.device_name = document.getElementById('cfg-jf-name').value.trim();
+
+      cfg.adapter.lms.enabled = document.getElementById('cfg-lms-enabled').checked;
+      cfg.adapter.lms.server_host = document.getElementById('cfg-lms-host').value.trim();
+      cfg.adapter.lms.player_name = document.getElementById('cfg-lms-name').value.trim();
+
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cfg)
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+          showToast('Save failed: ' + (data.error || res.statusText));
+        } else {
+          showToast(data.message || 'Saved configuration to kiiaud.toml');
+          await loadState(true);
+        }
+      } catch (e) {
+        showToast('Network error: ' + e.message);
+      }
+    }
+
+    async function browseDir(path) {
+      try {
+        const res = await fetch('/api/browse?path=' + encodeURIComponent(path || '/'));
+        const data = await res.json();
+        const box = document.getElementById('browser-list');
+        box.innerHTML = '';
+        if (data.error) {
+          box.innerHTML = `<div style="color: var(--danger); font-size: 12.5px;">${data.error}</div>`;
+          return;
+        }
+        document.getElementById('browse-path').value = data.path;
+        lastBrowseFiles = data.entries.filter(e => !e.is_dir).map(e => e.path);
+
+        if (data.entries.length === 0) {
+          box.innerHTML = '<div style="color: var(--text-muted); font-size: 12.5px;">No audio files or directories found here.</div>';
+          return;
+        }
+
+        data.entries.forEach(entry => {
+          const row = document.createElement('div');
+          row.className = 'browser-entry';
+
+          const name = document.createElement('div');
+          name.className = 'browser-entry-name';
+          name.textContent = (entry.is_dir ? '📁 ' : '🎵 ') + entry.name;
+          if (entry.is_dir) {
+            name.onclick = () => browseDir(entry.path);
+            row.appendChild(name);
+          } else {
+            name.onclick = () => {
+              sendCmd({ action: 'play_uri', uri: entry.path });
+              showToast('Playing: ' + entry.name);
+            };
+            const acts = document.createElement('div');
+            acts.style.display = 'flex';
+            acts.style.gap = '6px';
+
+            const pBtn = document.createElement('button');
+            pBtn.className = 'btn btn-sm btn-primary';
+            pBtn.textContent = '▶';
+            pBtn.onclick = () => {
+              sendCmd({ action: 'play_uri', uri: entry.path });
+              showToast('Playing: ' + entry.name);
+            };
+
+            const qBtn = document.createElement('button');
+            qBtn.className = 'btn btn-sm';
+            qBtn.textContent = '+ Queue';
+            qBtn.onclick = () => {
+              sendCmd({ action: 'enqueue', uri: entry.path });
+              showToast('Enqueued: ' + entry.name);
+            };
+
+            acts.appendChild(pBtn);
+            acts.appendChild(qBtn);
+            row.appendChild(name);
+            row.appendChild(acts);
+          }
+          box.appendChild(row);
+        });
+      } catch (e) {
+        showToast('Browse error: ' + e.message);
+      }
+    }
+
+    function browseParent() {
+      const cur = document.getElementById('browse-path').value.trim();
+      if (!cur || cur === '/') return;
+      const idx = cur.lastIndexOf('/');
+      const parent = idx <= 0 ? '/' : cur.slice(0, idx);
+      browseDir(parent);
+    }
+
+    async function enqueueAllInCurrentDir() {
+      if (!lastBrowseFiles.length) {
+        showToast('No audio files in current folder');
+        return;
+      }
+      for (const file of lastBrowseFiles) {
+        await fetch('/api/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'enqueue', uri: file })
+        });
+      }
+      showToast(`Enqueued ${lastBrowseFiles.length} tracks`);
+      await loadState(false);
+    }
+
+    async function loadState(populateConfigForm) {
+      try {
+        const res = await fetch('/api/state');
+        if (res.ok) {
+          const data = await res.json();
+          renderState(data, populateConfigForm);
+        }
+      } catch (_) {}
+    }
+
+    function connectSse() {
+      const es = new EventSource('/api/events');
+      const badge = document.getElementById('sse-badge');
+      const text = document.getElementById('sse-text');
+
+      es.onopen = () => {
+        badge.classList.add('live');
+        text.textContent = 'LIVE SSE';
+      };
+
+      es.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          renderState(data, false);
+        } catch (_) {}
+      };
+
+      es.onerror = () => {
+        badge.classList.remove('live');
+        text.textContent = 'RECONNECTING...';
+      };
+    }
+
+    loadState(true);
+    connectSse();
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kiiaud-core",
+    "crates/kiiaud-decoder",
+    "crates/kiiaud-output",
+    "crates/kiiaud-output-alsa",
+    "crates/kiiaud-output-wasapi",
+    "crates/kiiaud-output-android",
+    "crates/kiiaud-playback",
+    "crates/kiiaud-adapter-cli",
+    "crates/kiiaud-adapter-mpd",
+    "crates/kiiaud-adapter-jellyfin",
+    "crates/kiiaud-adapter-lms",
+    "crates/kiiaud-adapter-web",
+    "crates/kiiaud",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["kiiaud contributors", "rmpd contributors"]
+license = "MIT OR Apache-2.0"
+description = "Lightweight, headless, database-free network audio playback daemon"
+readme = "README.md"
+repository = "https://github.com/kii-notes/kiiaud"
+homepage = "https://github.com/kii-notes/kiiaud"
+keywords = ["audio", "alsa", "dsd", "wavpack", "bit-perfect"]
+categories = ["multimedia::audio", "network-programming"]
+
+[workspace.dependencies]
+# Async & Core
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+
+# Audio Decoding (Symphonia fork with native DSD, DSF/DFF, WavPack PCM & DSD support)
+symphonia = { git = "https://github.com/M0Rf30/Symphonia", rev = "85aa84935574412f6e8a14e502138271ce634f4d", default-features = false, features = ["opt-simd", "all-meta", "flac", "wav", "aiff", "pcm", "wavpack", "dsd", "ogg", "opus", "mp3", "aac", "isomp4", "alac"] }
+
+# Networking
+reqwest = { version = "0.13", features = ["stream", "blocking", "json"] }
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+# Internal workspace crates
+kiiaud-core = { path = "crates/kiiaud-core" }
+kiiaud-decoder = { path = "crates/kiiaud-decoder" }
+kiiaud-output = { path = "crates/kiiaud-output" }
+kiiaud-output-alsa = { path = "crates/kiiaud-output-alsa" }
+kiiaud-output-wasapi = { path = "crates/kiiaud-output-wasapi" }
+kiiaud-output-android = { path = "crates/kiiaud-output-android" }
+kiiaud-playback = { path = "crates/kiiaud-playback" }
+kiiaud-adapter-cli = { path = "crates/kiiaud-adapter-cli" }
+kiiaud-adapter-mpd = { path = "crates/kiiaud-adapter-mpd" }
+kiiaud-adapter-jellyfin = { path = "crates/kiiaud-adapter-jellyfin" }
+kiiaud-adapter-lms = { path = "crates/kiiaud-adapter-lms" }
+kiiaud-adapter-web = { path = "crates/kiiaud-adapter-web" }
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+empty_line_after_doc_comments = "allow"
+
+[profile.dev]
+debug = 0
+strip = "debuginfo"
+
+[profile.test]
+debug = 0
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

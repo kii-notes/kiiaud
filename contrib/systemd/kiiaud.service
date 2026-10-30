@@ -1,0 +1,32 @@
+[Unit]
+Description=kiiaud — Bit-Perfect Network Audio Playback Endpoint (System Service)
+Documentation=https://github.com/kii-notes/kiiaud
+After=network-online.target sound.target
+Wants=network-online.target sound.target
+
+[Service]
+Type=simple
+# By default, runs as dedicated user 'kiiaud' or root. Adjust User/Group to match your distro.
+User=kiiaud
+Group=audio
+SupplementaryGroups=audio
+
+# Validate system configuration before starting
+ExecStartPre=-/usr/local/bin/kiiaud --system --check-config
+ExecStart=/usr/local/bin/kiiaud --system
+
+Restart=on-failure
+RestartSec=3
+
+# Real-time audio priority and memory locking for glitch-free playback
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+RuntimeDirectory=kiiaud
+
+[Install]
+WantedBy=multi-user.target

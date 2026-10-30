@@ -1,0 +1,20 @@
+[package]
+name = "kiiaud-output-alsa"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kiiaud-core.workspace = true
+kiiaud-output.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.12"
+libc = "0.2"
+

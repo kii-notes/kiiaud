@@ -1,0 +1,110 @@
+# ==============================================================================
+# kiiaud — Bit-Perfect Network Audio Playback Daemon Configuration Example
+# ==============================================================================
+# Full reference documentation: docs/CONFIGURATION.md
+# Configuration search hierarchy:
+#   1. Explicit flag:    kiiaud --config /path/to/custom.toml
+#   2. System-wide:      /etc/kiiaud/config.toml (when using --system or as base)
+#   3. Per-user:         ~/.config/kiiaud/config.toml (merges & overrides system)
+#   4. Local dev file:   ./kiiaud.toml (if running in repo directory)
+
+[daemon]
+# Friendly network endpoint identifier displayed in logs and service discovery.
+name = "kiiaud-endpoint"
+
+# Unix domain socket path used for local CLI IPC control (`kiiaudctl`).
+# - For system-wide daemon: "/run/kiiaud/kiiaud.sock"
+# - For user-session daemon: "/tmp/kiiaud.sock" or "$XDG_RUNTIME_DIR/kiiaud.sock"
+socket_path = "/tmp/kiiaud.sock"
+
+# Log verbosity level: "trace", "debug", "info", "warn", "error".
+log_level = "info"
+
+[output]
+# Audio output backend:
+#   - "alsa": Direct Linux ALSA hardware transport (recommended for bit-perfect Hi-Fi)
+#   - "wasapi": Windows Exclusive WASAPI transport
+#   - "android" / "oboe": Android direct AudioTrack / AAudio
+#   - "mock" / "null": Headless dummy output for testing and CI
+backend = "alsa"
+
+# Audio output device identifier.
+# On Linux ALSA:
+#   - Use direct hardware card syntax to bypass PulseAudio / PipeWire software mixing:
+#     e.g., "hw:CARD=Audio,DEV=0" (card by name) or "hw:0,0" (card by index).
+#   - Run `aplay -l` to discover your audio card and subdevice names.
+# On Windows WASAPI:
+#   - Device name substring (e.g. "DAC") or "default" for system primary device.
+device = "hw:CARD=Audio,DEV=0"
+
+# Enforce bit-perfect transport:
+#   - When true: Disables software resampling, format conversions, and software volume DSP.
+#   - The DAC is always configured at the exact source sample rate and bit depth.
+bit_perfect = true
+
+# DSD (Direct Stream Digital) playback transport mode:
+#   - "auto": Probes Native DSD (DSD_U32_BE / DSD_U32_LE). If unsupported by ALSA DAC,
+#             automatically falls back to DoP (DSD over PCM). Never converts to PCM silently.
+#   - "native": Strict Native DSD only. Fails with error if DAC lacks native DSD support.
+#   - "dop": Strict DoP framing inside 24/32-bit PCM frames.
+dsd_mode = "auto"
+
+# Hardware ring buffer size in milliseconds (default: 200ms).
+buffer_time_ms = 200
+
+# ALSA period time (hardware interrupt interval) in milliseconds (default: 40ms).
+period_time_ms = 40
+
+# Optional hardware mixer control name for analog volume adjustment (e.g., "PCM" or "Master").
+# Leave commented out or unset to keep hardware mixer untouched for purest 100% bit-perfect signal.
+# hardware_mixer = "PCM"
+
+[security]
+# Allowed filesystem directory roots for local playback via CLI/WebUI.
+# Example: allowed_roots = ["/media/music", "/home/music/DSD"]
+# Leave empty (`[]`) to allow any non-system regular file on the system.
+allowed_roots = []
+
+# ==============================================================================
+# Protocol Adapters
+# ==============================================================================
+
+[adapter.web]
+# Embedded lightweight WebUI & HTTP REST/SSE API for browser control.
+enabled = true
+listen = "0.0.0.0:7110"
+
+[adapter.mpd]
+# Music Player Daemon (MPD) protocol emulation server.
+# Allows controlling kiiaud from any standard MPD client (ncmpcpp, Cantata, MAFA, etc.).
+enabled = true
+listen = "0.0.0.0:6600"
+
+[adapter.jellyfin]
+# Jellyfin "Play To" / Remote Control Endpoint (Cast target).
+# When enabled, kiiaud authenticates with your Jellyfin server via WebSocket and appears
+# directly in the "Cast / Play On" device menu in Jellyfin Web & Mobile apps.
+enabled = false
+server_url = "http://jellyfin.local:8096"
+
+# Authentication: You can use an API Key OR a Username + Password.
+# api_key = "your_jellyfin_api_key_here"
+# username = "your_username"
+# password = "your_password"
+
+# Identifier and display name shown in Jellyfin client UI:
+device_id = "kiiaud-endpoint-01"
+device_name = "kiiaud Hi-Fi Endpoint"
+
+[adapter.lms]
+# Logitech Media Server (LMS / Lyrion) SlimProto client adapter.
+# Emulates a hardware Squeezebox player, supporting gapless bit-perfect streaming.
+enabled = false
+server_host = "192.168.1.100"
+server_port = 3483
+http_port = 9000
+player_name = "kiiaud Squeezebox"
+
+# Locally-administered virtual MAC address for LMS device tracking (6 bytes):
+mac_address = [2, 75, 73, 73, 65, 85]
+

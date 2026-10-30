@@ -1,0 +1,21 @@
+[package]
+name = "kiiaud-adapter-mpd"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kiiaud-core.workspace = true
+kiiaud-playback.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+kiiaud-output = { path = "../kiiaud-output" }
+

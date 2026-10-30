@@ -1,0 +1,19 @@
+[Unit]
+Description=kiiaud — Bit-Perfect Network Audio Playback Endpoint (User Session)
+Documentation=https://github.com/kii-notes/kiiaud
+After=default.target sound.target
+
+[Service]
+Type=simple
+# Automatically resolves ~/.config/kiiaud/config.toml (merged over /etc/kiiaud/config.toml)
+ExecStart=%h/.local/bin/kiiaud
+Restart=on-failure
+RestartSec=3
+
+# Real-time limits (if user has permissions in /etc/security/limits.d/audio.conf)
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+

@@ -1,0 +1,29 @@
+[package]
+name = "kiiaud"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "kiiaud"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+kiiaud-core.workspace = true
+kiiaud-playback.workspace = true
+kiiaud-adapter-cli.workspace = true
+kiiaud-adapter-mpd.workspace = true
+kiiaud-adapter-jellyfin.workspace = true
+kiiaud-adapter-lms.workspace = true
+kiiaud-adapter-web.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+

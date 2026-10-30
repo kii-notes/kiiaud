@@ -1,0 +1,22 @@
+[package]
+name = "kiiaud-output-android"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Android (Oboe / AAudio) audio output backend for kiiaud"
+
+[dependencies]
+kiiaud-core = { workspace = true }
+kiiaud-output = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+oboe = { version = "0.6", optional = true }
+
+[features]
+default = []
+oboe-backend = ["dep:oboe"]
+

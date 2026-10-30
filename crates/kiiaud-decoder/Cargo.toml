@@ -1,0 +1,21 @@
+[package]
+name = "kiiaud-decoder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kiiaud-core.workspace = true
+symphonia.workspace = true
+reqwest.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+kiiaud-output.workspace = true
+tempfile = "3"

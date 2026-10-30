@@ -1,0 +1,26 @@
+[package]
+name = "kiiaud-playback"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kiiaud-core.workspace = true
+kiiaud-decoder.workspace = true
+kiiaud-output.workspace = true
+kiiaud-output-alsa.workspace = true
+kiiaud-output-wasapi.workspace = true
+kiiaud-output-android.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+kiiaud-adapter-cli.workspace = true
+kiiaud-adapter-mpd.workspace = true
+tempfile = "3"
