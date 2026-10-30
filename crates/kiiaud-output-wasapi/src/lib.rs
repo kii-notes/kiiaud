@@ -534,11 +534,14 @@ impl AudioOutput for WasapiAudioOutput {
     fn capabilities(&self) -> OutputCapabilities {
         OutputCapabilities {
             backend_name: "WASAPI Exclusive Mode".to_owned(),
+            device_name: "WASAPI Audio Device".to_owned(),
             sample_rates: vec![44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+            unsupported_rates: Vec::new(),
             bit_depths: vec![16, 24, 32],
             channels: 2,
             exclusive: true,
             bit_perfect: self.config.bit_perfect,
+            adaptive_fallback: true,
             dsd_native: false,
             dsd_dop: true,
         }
@@ -692,11 +695,14 @@ impl AudioOutput for WasapiAudioOutput {
     fn capabilities(&self) -> OutputCapabilities {
         OutputCapabilities {
             backend_name: "WASAPI Exclusive Mode".to_owned(),
+            device_name: "WASAPI Audio Device".to_owned(),
             sample_rates: vec![44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+            unsupported_rates: Vec::new(),
             bit_depths: vec![16, 24, 32],
             channels: 2,
             exclusive: true,
             bit_perfect: self.config.bit_perfect,
+            adaptive_fallback: true,
             dsd_native: false,
             dsd_dop: true,
         }

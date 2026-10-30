@@ -36,6 +36,8 @@ pub enum IpcRequest {
     Move { from: u32, to: u32 },
     Swap { pos1: u32, pos2: u32 },
     Shuffle,
+    /// Query detected DAC hardware capabilities, supported rates, and bit-perfect profile.
+    Dac,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +46,11 @@ pub enum IpcResponse {
     Ok { message: String },
     Status { status: PlayerStatus },
     Queue { items: Vec<PlaybackItem> },
+    Dac {
+        capabilities: kiiaud_core::OutputCapabilities,
+        current_format: Option<kiiaud_core::AudioFormat>,
+        active_stream: Option<String>,
+    },
     Error { message: String },
 }
 
@@ -223,6 +230,17 @@ async fn process_ipc_request(req: IpcRequest, engine: &EngineHandle) -> IpcRespo
         IpcRequest::Queue => {
             return IpcResponse::Queue {
                 items: engine.queue_items(),
+            };
+        }
+        IpcRequest::Dac => {
+            let st = engine.status();
+            let capabilities = st.output_capabilities.unwrap_or_default();
+            let current_format = st.format;
+            let active_stream = st.current_item.as_ref().map(|i| i.source.display_uri());
+            return IpcResponse::Dac {
+                capabilities,
+                current_format,
+                active_stream,
             };
         }
     };

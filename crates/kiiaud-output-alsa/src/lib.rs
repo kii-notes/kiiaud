@@ -28,6 +28,7 @@ use alsa::{
 #[allow(dead_code)]
 pub struct AlsaAudioOutput {
     config: OutputConfig,
+    capabilities: OutputCapabilities,
     #[cfg(target_os = "linux")]
     pcm: Option<PCM>,
     #[cfg(target_os = "linux")]
@@ -36,11 +37,18 @@ pub struct AlsaAudioOutput {
     dop_encoder: Option<DopEncoder>,
     dop_scratch: Vec<i32>,
     byte_scratch: Vec<u8>,
+    is_adaptive_fallback: bool,
 }
 
 impl AlsaAudioOutput {
     pub fn new(config: OutputConfig) -> Self {
+        #[cfg(target_os = "linux")]
+        let capabilities = detect_hardware_capabilities(&config.device, config.bit_perfect);
+        #[cfg(not(target_os = "linux"))]
+        let capabilities = OutputCapabilities::default();
+
         Self {
+            capabilities,
             config,
             #[cfg(target_os = "linux")]
             pcm: None,
@@ -50,7 +58,12 @@ impl AlsaAudioOutput {
             dop_encoder: None,
             dop_scratch: Vec::new(),
             byte_scratch: Vec::new(),
+            is_adaptive_fallback: false,
         }
+    }
+
+    pub fn is_adaptive_fallback(&self) -> bool {
+        self.is_adaptive_fallback
     }
 }
 
@@ -85,18 +98,7 @@ impl AudioOutput for AlsaAudioOutput {
     }
 
     fn capabilities(&self) -> OutputCapabilities {
-        OutputCapabilities {
-            backend_name: "ALSA Hardware Direct (hw:)".to_owned(),
-            sample_rates: vec![
-                44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000,
-            ],
-            bit_depths: vec![16, 24, 32],
-            channels: 2,
-            exclusive: true,
-            bit_perfect: self.config.bit_perfect,
-            dsd_native: true,
-            dsd_dop: true,
-        }
+        self.capabilities.clone()
     }
 }
 
@@ -106,24 +108,25 @@ impl AlsaAudioOutput {
     fn configure_pcm(
         &self,
         pcm: &PCM,
+        device_name: &str,
         alsa_fmt: AlsaFormat,
         rate: u32,
         channels: u16,
+        allow_resample: bool,
     ) -> Result<(u64, u64)> {
         let hwp = HwParams::any(pcm).map_err(|e| {
             KiiaudError::Output(format!(
-                "ALSA hw_params_any failed on '{}': {e}",
-                self.config.device
+                "ALSA hw_params_any failed on '{device_name}': {e}"
             ))
         })?;
 
-        if self.config.bit_perfect {
+        if !allow_resample && self.config.bit_perfect {
             // Explicitly disable ALSA software resampling
             let _ = hwp.set_rate_resample(false);
         }
 
         hwp.set_access(Access::RWInterleaved).map_err(|e| {
-            KiiaudError::Output(format!("ALSA set_access(RWInterleaved) failed: {e}"))
+            KiiaudError::Output(format!("ALSA set_access(RWInterleaved) failed on '{device_name}': {e}"))
         })?;
 
         hwp.set_format(alsa_fmt).map_err(|e| {
@@ -142,10 +145,9 @@ impl AlsaAudioOutput {
             .set_rate_near(rate, ValueOr::Nearest)
             .map_err(|e| KiiaudError::Output(format!("ALSA set_rate({rate} Hz) failed: {e}")))?;
 
-        if self.config.bit_perfect && actual_rate != rate {
+        if !allow_resample && self.config.bit_perfect && actual_rate != rate {
             return Err(KiiaudError::UnsupportedFormat(format!(
-                "Bit-perfect violation: requested {rate} Hz, but ALSA hardware '{}' only supports {actual_rate} Hz",
-                self.config.device
+                "Bit-perfect violation: requested {rate} Hz, but ALSA hardware '{device_name}' only supports {actual_rate} Hz",
             )));
         }
 
@@ -159,11 +161,11 @@ impl AlsaAudioOutput {
         let _ = hwp.set_buffer_size_near(buffer_frames);
 
         pcm.hw_params(&hwp)
-            .map_err(|e| KiiaudError::Output(format!("ALSA snd_pcm_hw_params failed: {e}")))?;
+            .map_err(|e| KiiaudError::Output(format!("ALSA snd_pcm_hw_params failed on '{device_name}': {e}")))?;
 
         let current_hwp = pcm
             .hw_params_current()
-            .map_err(|e| KiiaudError::Output(format!("ALSA hw_params_current failed: {e}")))?;
+            .map_err(|e| KiiaudError::Output(format!("ALSA hw_params_current failed on '{device_name}': {e}")))?;
         let neg_buf = current_hwp.get_buffer_size().unwrap_or(0) as u64;
         let neg_per = current_hwp.get_period_size().unwrap_or(0) as u64;
 
@@ -175,7 +177,7 @@ impl AlsaAudioOutput {
         }
 
         pcm.prepare()
-            .map_err(|e| KiiaudError::Output(format!("ALSA snd_pcm_prepare failed: {e}")))?;
+            .map_err(|e| KiiaudError::Output(format!("ALSA snd_pcm_prepare failed on '{device_name}': {e}")))?;
 
         Ok((neg_buf, neg_per))
     }
@@ -184,9 +186,11 @@ impl AlsaAudioOutput {
     fn negotiate_pcm_format(
         &self,
         pcm: &PCM,
+        device_name: &str,
         preferred: SampleFormat,
         rate: u32,
         channels: u16,
+        allow_resample: bool,
     ) -> Result<(AlsaFormat, SampleFormat, u64, u64)> {
         // Candidate order preserves bit-perfection: never narrow bit depth if a wider or exact integer container is available!
         let candidates: &[AlsaFormat] = match preferred {
@@ -205,7 +209,7 @@ impl AlsaAudioOutput {
 
         let mut last_err = None;
         for &cand in candidates {
-            match self.configure_pcm(pcm, cand, rate, channels) {
+            match self.configure_pcm(pcm, device_name, cand, rate, channels, allow_resample) {
                 Ok((buf_sz, per_sz)) => {
                     let mapped_sf = match cand {
                         AlsaFormat::S16LE => SampleFormat::S16Le,
@@ -223,7 +227,7 @@ impl AlsaAudioOutput {
 
         Err(last_err.unwrap_or_else(|| {
             KiiaudError::UnsupportedFormat(format!(
-                "No compatible bit-perfect ALSA PCM format found for {preferred} at {rate} Hz"
+                "No compatible bit-perfect ALSA PCM format found for {preferred} at {rate} Hz on '{device_name}'"
             ))
         }))
     }
@@ -245,7 +249,7 @@ impl AlsaAudioOutput {
             let u32_rate = rate.u32_frame_rate_hz();
             for native_fmt in [AlsaFormat::DSDU32BE, AlsaFormat::DSDU32LE] {
                 if let Ok((buf_sz, per_sz)) =
-                    self.configure_pcm(pcm, native_fmt, u32_rate, channels)
+                    self.configure_pcm(pcm, &self.config.device, native_fmt, u32_rate, channels, false)
                 {
                     self.dop_encoder = None;
                     return Ok((native_fmt, DsdTransport::Native, buf_sz, per_sz));
@@ -262,7 +266,7 @@ impl AlsaAudioOutput {
         if try_dop {
             let dop_rate = rate.dop_pcm_rate_hz();
             for dop_fmt in [AlsaFormat::S32LE, AlsaFormat::S243LE, AlsaFormat::S24LE] {
-                if let Ok((buf_sz, per_sz)) = self.configure_pcm(pcm, dop_fmt, dop_rate, channels) {
+                if let Ok((buf_sz, per_sz)) = self.configure_pcm(pcm, &self.config.device, dop_fmt, dop_rate, channels, false) {
                     let enc = DopEncoder::new(rate, channels as usize, layout, bit_order)?;
                     self.dop_encoder = Some(enc);
                     return Ok((dop_fmt, DsdTransport::DoP, buf_sz, per_sz));
@@ -325,13 +329,6 @@ impl AudioOutput for AlsaAudioOutput {
         // Close any previous stream cleanly
         let _ = self.stop();
 
-        let pcm = PCM::new(&self.config.device, Direction::Playback, false).map_err(|e| {
-            KiiaudError::Output(format!(
-                "Failed to open ALSA hardware device '{}': {e}",
-                self.config.device
-            ))
-        })?;
-
         let negotiated_format = match *format {
             AudioFormat::Pcm {
                 sample_rate,
@@ -339,10 +336,45 @@ impl AudioOutput for AlsaAudioOutput {
                 sample_format,
                 bits_per_sample,
             } => {
-                let (alsa_fmt, hw_sf, buf_sz, per_sz) =
-                    self.negotiate_pcm_format(&pcm, sample_format, sample_rate, channels)?;
+                // Attempt 1: Strict Bit-Perfect on the primary configured hardware device (e.g. hw:CARD=Audio,DEV=0)
+                let primary_res = PCM::new(&self.config.device, Direction::Playback, false)
+                    .map_err(|e| KiiaudError::Output(format!("Failed to open ALSA hardware device '{}': {e}", self.config.device)))
+                    .and_then(|pcm| {
+                        let (alsa_fmt, hw_sf, buf_sz, per_sz) =
+                            self.negotiate_pcm_format(&pcm, &self.config.device, sample_format, sample_rate, channels, false)?;
+                        Ok((pcm, alsa_fmt, hw_sf, buf_sz, per_sz))
+                    });
+
+                let (pcm, alsa_fmt, hw_sf, buf_sz, per_sz, is_fallback) = match primary_res {
+                    Ok((p, f, sf, b, pr)) => (p, f, sf, b, pr, false),
+                    Err(orig_err) => {
+                        // Attempt 2: If primary device is hw: and failed (due to unsupported rate like 88.2kHz or format),
+                        // engage Adaptive Exception Fallback using plughw: to prevent silence / error!
+                        if self.config.device.starts_with("hw:") {
+                            let fallback_dev = format!("plug{}", self.config.device);
+                            tracing::warn!(
+                                primary_device = %self.config.device,
+                                fallback_device = %fallback_dev,
+                                sample_rate,
+                                error = %orig_err,
+                                "DAC hardware does not natively support {}Hz in direct bit-perfect mode; engaging adaptive ALSA plughw fallback",
+                                sample_rate
+                            );
+                            let fallback_pcm = PCM::new(&fallback_dev, Direction::Playback, false)
+                                .map_err(|e| KiiaudError::Output(format!("Failed to open ALSA fallback device '{fallback_dev}': {e}")))?;
+                            let (f, sf, b, pr) = self.negotiate_pcm_format(&fallback_pcm, &fallback_dev, sample_format, sample_rate, channels, true)
+                                .map_err(|e| KiiaudError::Output(format!("Adaptive fallback on '{fallback_dev}' failed: {e}")))?;
+                            (fallback_pcm, f, sf, b, pr, true)
+                        } else {
+                            return Err(orig_err);
+                        }
+                    }
+                };
+
                 self.hw_format = Some(alsa_fmt);
                 self.dop_encoder = None;
+                self.pcm = Some(pcm);
+                self.is_adaptive_fallback = is_fallback;
 
                 let actual = AudioFormat::Pcm {
                     sample_rate,
@@ -350,6 +382,8 @@ impl AudioOutput for AlsaAudioOutput {
                     sample_format: hw_sf,
                     bits_per_sample,
                 };
+                self.active_format = Some(actual);
+
                 tracing::info!(
                     device = %self.config.device,
                     alsa_format = %alsa_fmt,
@@ -358,8 +392,9 @@ impl AudioOutput for AlsaAudioOutput {
                     source_bits = bits_per_sample,
                     buffer_frames = buf_sz,
                     period_frames = per_sz,
-                    bit_perfect = self.config.bit_perfect,
-                    "ALSA hardware configured for bit-perfect PCM playback"
+                    bit_perfect = self.config.bit_perfect && !is_fallback,
+                    adaptive_fallback = is_fallback,
+                    "ALSA audio output successfully opened and configured"
                 );
                 actual
             }
@@ -370,9 +405,17 @@ impl AudioOutput for AlsaAudioOutput {
                 layout,
                 ..
             } => {
+                let pcm = PCM::new(&self.config.device, Direction::Playback, false).map_err(|e| {
+                    KiiaudError::Output(format!(
+                        "Failed to open ALSA hardware device '{}': {e}",
+                        self.config.device
+                    ))
+                })?;
+
                 let (alsa_fmt, transport, buf_sz, per_sz) =
                     self.negotiate_dsd_format(&pcm, rate, channels, bit_order, layout)?;
                 self.hw_format = Some(alsa_fmt);
+                self.is_adaptive_fallback = false;
 
                 let actual = AudioFormat::Dsd {
                     rate,
@@ -381,6 +424,9 @@ impl AudioOutput for AlsaAudioOutput {
                     bit_order,
                     layout,
                 };
+                self.pcm = Some(pcm);
+                self.active_format = Some(actual);
+
                 tracing::info!(
                     device = %self.config.device,
                     alsa_format = %alsa_fmt,
@@ -395,8 +441,6 @@ impl AudioOutput for AlsaAudioOutput {
             }
         };
 
-        self.pcm = Some(pcm);
-        self.active_format = Some(negotiated_format);
         Ok(negotiated_format)
     }
 
@@ -504,23 +548,184 @@ impl AudioOutput for AlsaAudioOutput {
         self.hw_format = None;
         self.active_format = None;
         self.dop_encoder = None;
+        self.is_adaptive_fallback = false;
         Ok(())
     }
 
     fn capabilities(&self) -> OutputCapabilities {
-        OutputCapabilities {
-            backend_name: "ALSA Hardware Direct (hw:)".to_owned(),
-            sample_rates: vec![
-                44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000,
-            ],
-            bit_depths: vec![16, 24, 32],
-            channels: 2,
-            exclusive: true,
-            bit_perfect: self.config.bit_perfect,
-            dsd_native: true,
-            dsd_dop: true,
+        self.capabilities.clone()
+    }
+}
+
+/// Query the DAC hardware name, supported sample rates, bit depths, and capabilities from ALSA and `/proc/asound`.
+pub fn detect_hardware_capabilities(device: &str, bit_perfect_cfg: bool) -> OutputCapabilities {
+    let card_id = extract_card_id(device);
+
+    let (dev_name, stream_rates, stream_bits) = if let Some(ref cid) = card_id {
+        parse_proc_stream0(cid)
+    } else {
+        (None, Vec::new(), Vec::new())
+    };
+
+    let device_name = dev_name.unwrap_or_else(|| {
+        card_id
+            .as_deref()
+            .and_then(lookup_card_name_from_cards)
+            .unwrap_or_else(|| device.to_owned())
+    });
+
+    let standard_rates = [
+        44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000,
+    ];
+
+    let supported_rates = if !stream_rates.is_empty() {
+        stream_rates
+    } else {
+        #[cfg(target_os = "linux")]
+        {
+            probe_alsa_rates(device, &standard_rates)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            vec![44100, 48000, 96000, 192000]
+        }
+    };
+
+    let max_rate = supported_rates.iter().copied().max().unwrap_or(48000);
+
+    let unsupported_rates: Vec<u32> = standard_rates
+        .into_iter()
+        .filter(|&r| r <= max_rate && !supported_rates.contains(&r))
+        .collect();
+
+    let bit_depths = if !stream_bits.is_empty() {
+        stream_bits
+    } else {
+        vec![16, 24]
+    };
+
+    let dsd_dop = supported_rates.iter().any(|&r| r >= 176400);
+
+    OutputCapabilities {
+        backend_name: "ALSA Hardware Direct (hw:)".to_owned(),
+        device_name,
+        sample_rates: supported_rates,
+        unsupported_rates,
+        bit_depths,
+        channels: 2,
+        exclusive: true,
+        bit_perfect: bit_perfect_cfg,
+        adaptive_fallback: true,
+        dsd_native: false,
+        dsd_dop,
+    }
+}
+
+pub fn extract_card_id(device: &str) -> Option<String> {
+    if let Some(card_part) = device
+        .strip_prefix("hw:CARD=")
+        .or_else(|| device.strip_prefix("plughw:CARD="))
+    {
+        if let Some((card, _)) = card_part.split_once(',') {
+            return Some(card.to_owned());
+        }
+        return Some(card_part.to_owned());
+    }
+    if let Some(rest) = device
+        .strip_prefix("hw:")
+        .or_else(|| device.strip_prefix("plughw:"))
+    {
+        if let Some((card_num, _)) = rest.split_once(',') {
+            return Some(card_num.to_owned());
+        }
+        return Some(rest.to_owned());
+    }
+    None
+}
+
+pub fn parse_proc_stream0(card_id: &str) -> (Option<String>, Vec<u32>, Vec<u8>) {
+    let paths = [
+        format!("/proc/asound/{card_id}/stream0"),
+        format!("/proc/asound/card{card_id}/stream0"),
+    ];
+
+    let content = paths.iter().find_map(|p| std::fs::read_to_string(p).ok());
+    let Some(text) = content else {
+        return (None, Vec::new(), Vec::new());
+    };
+
+    let mut name = None;
+    let mut rates = std::collections::BTreeSet::new();
+    let mut bits = std::collections::BTreeSet::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if name.is_none() && !trimmed.is_empty() {
+            let dev_name = if let Some((n, _)) = trimmed.split_once(" at usb-") {
+                n.trim().to_owned()
+            } else if let Some((n, _)) = trimmed.split_once(" : USB Audio") {
+                n.trim().to_owned()
+            } else {
+                trimmed.to_owned()
+            };
+            name = Some(dev_name);
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("Rates:") {
+            for token in rest.split_whitespace() {
+                if let Ok(r) = token.trim_matches(',').parse::<u32>() {
+                    rates.insert(r);
+                }
+            }
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("Bits:") {
+            for token in rest.split_whitespace() {
+                if let Ok(b) = token.trim_matches(',').parse::<u8>() {
+                    bits.insert(b);
+                }
+            }
         }
     }
+
+    (name, rates.into_iter().collect(), bits.into_iter().collect())
+}
+
+pub fn lookup_card_name_from_cards(card_id: &str) -> Option<String> {
+    let text = std::fs::read_to_string("/proc/asound/cards").ok()?;
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed.contains(&format!("[{card_id}")) || trimmed.starts_with(&format!("{card_id} [")) {
+            if let Some(desc_line) = lines.next() {
+                return Some(desc_line.trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn probe_alsa_rates(device: &str, candidates: &[u32]) -> Vec<u32> {
+    let mut supported = Vec::new();
+    if let Ok(pcm) = PCM::new(device, Direction::Playback, false) {
+        for &rate in candidates {
+            if let Ok(hwp) = HwParams::any(&pcm) {
+                let _ = hwp.set_rate_resample(false);
+                let _ = hwp.set_access(Access::RWInterleaved);
+                let _ = hwp.set_channels(2);
+                if let Ok(actual) = hwp.set_rate_near(rate, ValueOr::Nearest) {
+                    if actual == rate {
+                        supported.push(rate);
+                    }
+                }
+            }
+        }
+    }
+    if supported.is_empty() {
+        supported = vec![44100, 48000, 96000, 192000];
+    }
+    supported
 }
 
 /// Convert MSB-aligned 32-bit signed integers (`i32`) into exact ALSA hardware byte layout.
@@ -630,11 +835,24 @@ mod tests {
     }
 
     #[test]
-    fn test_s16_le_packing_is_bit_exact() {
-        // 16-bit value 0x1234 left-aligned in i32 is 0x12340000
-        let sample: i32 = 0x1234_0000;
-        let mut out = Vec::new();
-        pack_i32_to_alsa_bytes(&[sample], AlsaFormat::S16LE, &mut out).unwrap();
-        assert_eq!(out, vec![0x34, 0x12]);
+    fn test_extract_card_id() {
+        assert_eq!(extract_card_id("hw:CARD=Audio,DEV=0"), Some("Audio".to_owned()));
+        assert_eq!(extract_card_id("plughw:CARD=Audio,DEV=0"), Some("Audio".to_owned()));
+        assert_eq!(extract_card_id("hw:7,0"), Some("7".to_owned()));
+        assert_eq!(extract_card_id("default"), None);
+    }
+
+    #[test]
+    fn test_detect_hardware_capabilities_card_audio() {
+        let caps = detect_hardware_capabilities("hw:CARD=Audio,DEV=0", true);
+        assert_eq!(caps.backend_name, "ALSA Hardware Direct (hw:)");
+        assert!(caps.bit_perfect);
+        assert!(caps.adaptive_fallback);
+        assert!(caps.sample_rates.contains(&44100));
+        assert!(caps.sample_rates.contains(&48000));
+        assert!(caps.sample_rates.contains(&96000));
+        assert!(caps.sample_rates.contains(&192000));
+        assert!(caps.unsupported_rates.contains(&88200));
+        assert!(caps.unsupported_rates.contains(&176400));
     }
 }

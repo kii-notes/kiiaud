@@ -144,6 +144,10 @@ struct Args {
     #[arg(long, help_heading = "Audio Output Options")]
     hardware_mixer: Option<String>,
 
+    /// Display detected DAC hardware capabilities, supported sample rates, and bit-perfect profile, then exit.
+    #[arg(short = 'D', long, help_heading = "Audio Output Options")]
+    dac_info: bool,
+
     // -------------------------------------------------------------------------
     // Security Options (Overrides [security])
     // -------------------------------------------------------------------------
@@ -399,6 +403,55 @@ async fn main() -> anyhow::Result<()> {
 
     // Command-line options take ultimate precedence over any configuration files
     args.apply_to_config(&mut config);
+
+    // Handle --dac-info command
+    if args.dac_info {
+        #[cfg(target_os = "linux")]
+        let caps = kiiaud_output_alsa::detect_hardware_capabilities(&config.output.device, config.output.bit_perfect);
+        #[cfg(not(target_os = "linux"))]
+        let caps = kiiaud_core::OutputCapabilities::default();
+
+        println!("=== kiiaud DAC & Audio Hardware Inspection ===");
+        if !caps.device_name.is_empty() {
+            println!("Device Name:      {}", caps.device_name);
+        }
+        println!("Output Device:    {} (Backend: {})", config.output.device, config.output.backend);
+        println!(
+            "Bit-Perfect:      {} (Adaptive Fallback: {})",
+            if caps.bit_perfect { "Enabled" } else { "Disabled" },
+            if caps.adaptive_fallback { "Active (Auto plughw for unsupported rates)" } else { "Off" }
+        );
+        let native_rates: Vec<String> = caps
+            .sample_rates
+            .iter()
+            .map(|r| format!("{:.1} kHz", *r as f64 / 1000.0))
+            .collect();
+        println!("Native Rates:     {}", native_rates.join(", "));
+
+        if !caps.unsupported_rates.is_empty() {
+            let unsupp_rates: Vec<String> = caps
+                .unsupported_rates
+                .iter()
+                .map(|r| format!("{:.1} kHz", *r as f64 / 1000.0))
+                .collect();
+            println!("Adaptive Rates:   {} (SACD downscale -> Auto Fallback Resampled)", unsupp_rates.join(", "));
+        }
+
+        let bit_strs: Vec<String> = caps
+            .bit_depths
+            .iter()
+            .map(|b| format!("{b}-bit"))
+            .collect();
+        println!("Bit Depths:       {}", bit_strs.join(", "));
+        println!("Channels:         {} channels (Stereo)", caps.channels);
+        println!(
+            "DSD Capabilities: Native DSD: {} | DoP (DSD over PCM): {}",
+            if caps.dsd_native { "Yes" } else { "No" },
+            if caps.dsd_dop { "Yes" } else { "No" }
+        );
+        println!("===============================================");
+        return Ok(());
+    }
 
     // Handle --check-config command
     if args.check_config {

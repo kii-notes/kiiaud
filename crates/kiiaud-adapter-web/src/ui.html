@@ -719,6 +719,45 @@
             <div style="display: flex; gap: 8px; flex-wrap: wrap;" id="adapter-pills"></div>
           </div>
         </div>
+
+        <!-- DAC & Hardware Capabilities Panel -->
+        <div class="panel" id="dac-panel">
+          <div class="panel-title">
+            <span>DAC &amp; Audio Hardware Profile</span>
+            <span id="dac-bitperfect-badge" class="badge live">BIT-PERFECT DIRECT</span>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 14px;">
+            <div style="background: var(--bg-surface); padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border);">
+              <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em;">Device Name</div>
+              <div id="dac-name" style="font-weight: 600; font-size: 0.95rem; margin-top: 2px;">Detecting...</div>
+            </div>
+            <div style="background: var(--bg-surface); padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border);">
+              <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em;">Output Backend</div>
+              <div id="dac-backend" style="font-family: var(--font-mono); font-size: 0.88rem; margin-top: 2px;">ALSA Direct (hw:)</div>
+            </div>
+            <div style="background: var(--bg-surface); padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border);">
+              <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em;">DSD Capabilities</div>
+              <div id="dac-dsd" style="font-size: 0.88rem; margin-top: 2px;">DoP Supported</div>
+            </div>
+            <div style="background: var(--bg-surface); padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border);">
+              <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em;">Bit Depths</div>
+              <div id="dac-bits" style="font-size: 0.88rem; margin-top: 2px;">16-bit, 24-bit</div>
+            </div>
+          </div>
+
+          <div style="margin-top: 10px;">
+            <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 6px;">Supported Sample Rates (Hardware Native):</div>
+            <div id="dac-rates-container" style="display: flex; gap: 6px; flex-wrap: wrap;"></div>
+          </div>
+
+          <div id="dac-unsupported-section" style="margin-top: 12px; display: none;">
+            <div style="font-size: 0.8rem; font-weight: 600; color: var(--gold); margin-bottom: 6px;">
+              <span>Adaptive Fallback Rates (DAC Clock Missing &bull; SACD Downscale &bull; Auto Resampled):</span>
+            </div>
+            <div id="dac-unsupported-container" style="display: flex; gap: 6px; flex-wrap: wrap;"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1020,6 +1059,64 @@
         span.textContent = `${a.name}: ${a.on ? a.info : 'OFF'}`;
         pills.appendChild(span);
       });
+
+      // DAC & Hardware Capabilities
+      const caps = st.output_capabilities;
+      if (caps) {
+        const nameEl = document.getElementById('dac-name');
+        if (nameEl) nameEl.textContent = caps.device_name || cfg.output.device;
+        const bEl = document.getElementById('dac-backend');
+        if (bEl) bEl.textContent = `${caps.backend_name} • ${cfg.output.device}`;
+        const dsdEl = document.getElementById('dac-dsd');
+        if (dsdEl) dsdEl.textContent = `Native: ${caps.dsd_native ? 'Yes' : 'No'} | DoP: ${caps.dsd_dop ? 'Yes' : 'No'}`;
+        const bitsEl = document.getElementById('dac-bits');
+        if (bitsEl) bitsEl.textContent = (caps.bit_depths || []).map(b => b + '-bit').join(', ');
+
+        const badge = document.getElementById('dac-bitperfect-badge');
+        if (badge) {
+          if (caps.bit_perfect) {
+            badge.className = 'badge live';
+            badge.textContent = caps.adaptive_fallback ? 'BIT-PERFECT • ADAPTIVE FALLBACK ON' : 'BIT-PERFECT DIRECT';
+          } else {
+            badge.className = 'badge';
+            badge.textContent = 'STANDARD MIXER';
+          }
+        }
+
+        const ratesCont = document.getElementById('dac-rates-container');
+        if (ratesCont) {
+          ratesCont.innerHTML = '';
+          (caps.sample_rates || []).forEach(r => {
+            const sp = document.createElement('span');
+            sp.className = 'badge live';
+            sp.style.padding = '3px 8px';
+            sp.style.fontSize = '12px';
+            sp.textContent = (r / 1000).toFixed(1) + ' kHz';
+            ratesCont.appendChild(sp);
+          });
+        }
+
+        const unsuppSection = document.getElementById('dac-unsupported-section');
+        const unsuppCont = document.getElementById('dac-unsupported-container');
+        if (unsuppSection && unsuppCont) {
+          unsuppCont.innerHTML = '';
+          if (caps.unsupported_rates && caps.unsupported_rates.length > 0) {
+            unsuppSection.style.display = 'block';
+            caps.unsupported_rates.forEach(r => {
+              const sp = document.createElement('span');
+              sp.className = 'badge';
+              sp.style.borderColor = 'var(--gold)';
+              sp.style.color = 'var(--gold)';
+              sp.style.padding = '3px 8px';
+              sp.style.fontSize = '12px';
+              sp.textContent = (r / 1000).toFixed(1) + ' kHz';
+              unsuppCont.appendChild(sp);
+            });
+          } else {
+            unsuppSection.style.display = 'none';
+          }
+        }
+      }
 
       // Queue
       document.getElementById('tab-queue-count').textContent = data.queue.length;

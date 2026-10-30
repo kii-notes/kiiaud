@@ -354,6 +354,16 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
             let json = serde_json::to_vec(&devs).unwrap_or_default();
             write_response(&mut write_half, "200 OK", "application/json", &json).await?;
         }
+        ("GET", "/api/dac") => {
+            let st = ctx.engine.status();
+            let caps = st.output_capabilities.unwrap_or_default();
+            let json = serde_json::to_vec(&serde_json::json!({
+                "capabilities": caps,
+                "current_format": st.format.map(|f| f.to_string()),
+                "bit_perfect": caps.bit_perfect,
+            })).unwrap_or_default();
+            write_response(&mut write_half, "200 OK", "application/json", &json).await?;
+        }
         ("GET", "/api/config") => {
             let cfg = ctx.config.read().clone();
             let json = serde_json::to_vec(&cfg).unwrap_or_default();

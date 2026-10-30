@@ -54,6 +54,8 @@ enum Commands {
     Swap { pos1: u32, pos2: u32 },
     /// Shuffle all tracks in the current queue.
     Shuffle,
+    /// Display detected DAC hardware capabilities, supported sample rates, and bit-perfect profile.
+    Dac,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -75,11 +77,67 @@ async fn main() {
         Commands::Move { from, to } => IpcRequest::Move { from, to },
         Commands::Swap { pos1, pos2 } => IpcRequest::Swap { pos1, pos2 },
         Commands::Shuffle => IpcRequest::Shuffle,
+        Commands::Dac => IpcRequest::Dac,
     };
 
     match send_ipc_request(&cli.socket, &req).await {
         Ok(IpcResponse::Ok { message }) => {
             println!("{message}");
+        }
+        Ok(IpcResponse::Dac {
+            capabilities,
+            current_format,
+            active_stream,
+        }) => {
+            println!("=== kiiaud DAC & Output Device Info ===");
+            if !capabilities.device_name.is_empty() {
+                println!("Device:           {}", capabilities.device_name);
+            }
+            println!("Backend:          {}", capabilities.backend_name);
+            println!(
+                "Bit-Perfect:      {} (Adaptive Fallback: {})",
+                if capabilities.bit_perfect { "Enabled" } else { "Disabled" },
+                if capabilities.adaptive_fallback { "Active (No Silent Errors)" } else { "Off" }
+            );
+
+            let native_rates: Vec<String> = capabilities
+                .sample_rates
+                .iter()
+                .map(|r| format!("{:.1} kHz", *r as f64 / 1000.0))
+                .collect();
+            println!("Native Rates:     {}", native_rates.join(", "));
+
+            if !capabilities.unsupported_rates.is_empty() {
+                let unsupp_rates: Vec<String> = capabilities
+                    .unsupported_rates
+                    .iter()
+                    .map(|r| format!("{:.1} kHz", *r as f64 / 1000.0))
+                    .collect();
+                println!("Adaptive Rates:   {} (Auto Fallback Resampled)", unsupp_rates.join(", "));
+            }
+
+            let bit_strs: Vec<String> = capabilities
+                .bit_depths
+                .iter()
+                .map(|b| format!("{b}-bit"))
+                .collect();
+            println!("Bit Depths:       {}", bit_strs.join(", "));
+            println!("Channels:         {} channels (Stereo)", capabilities.channels);
+            println!(
+                "DSD Support:      Native DSD: {} | DoP (DSD over PCM): {}",
+                if capabilities.dsd_native { "Yes" } else { "No" },
+                if capabilities.dsd_dop { "Yes" } else { "No" }
+            );
+
+            if let Some(fmt) = current_format {
+                println!("Current Stream:   {fmt} [Active]");
+            } else {
+                println!("Current Stream:   (Idle / Stopped)");
+            }
+            if let Some(uri) = active_stream {
+                println!("Active Source:    {uri}");
+            }
+            println!("=======================================");
         }
         Ok(IpcResponse::Status { status }) => {
             println!("State:    {}", status.state);

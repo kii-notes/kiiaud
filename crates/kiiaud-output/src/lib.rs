@@ -117,13 +117,16 @@ impl AudioOutput for MockAudioOutput {
     fn capabilities(&self) -> OutputCapabilities {
         OutputCapabilities {
             backend_name: "Mock / Null Audio Output".to_owned(),
+            device_name: "Mock Device".to_owned(),
             sample_rates: vec![
                 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000,
             ],
+            unsupported_rates: Vec::new(),
             bit_depths: vec![16, 24, 32],
             channels: 2,
             exclusive: true,
             bit_perfect: true,
+            adaptive_fallback: true,
             dsd_native: true,
             dsd_dop: true,
         }

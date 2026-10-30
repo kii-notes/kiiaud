@@ -340,8 +340,14 @@ impl AudioBuffer {
 pub struct OutputCapabilities {
     /// Human-readable backend name (e.g. "ALSA Hardware Direct (hw:)", "WASAPI Exclusive Mode", "Android Oboe (AAudio)", "Mock / Null").
     pub backend_name: String,
-    /// List of supported sample rates in Hz (e.g. [44100, 48000, 96000, 192000]).
+    /// Detected hardware device name or description (e.g. "C-Media Electronics Inc. Digital Hifi Audio").
+    #[serde(default)]
+    pub device_name: String,
+    /// List of native hardware-supported sample rates in Hz (e.g. [44100, 48000, 96000, 192000]).
     pub sample_rates: Vec<u32>,
+    /// Sample rates that are not natively supported by the DAC hardware and require adaptive fallback (e.g. [88200, 176400]).
+    #[serde(default)]
+    pub unsupported_rates: Vec<u32>,
     /// List of supported bit depths in bits (e.g. [16, 24, 32]).
     pub bit_depths: Vec<u8>,
     /// Maximum channels supported.
@@ -350,6 +356,9 @@ pub struct OutputCapabilities {
     pub exclusive: bool,
     /// Whether the output pipeline delivers bit-perfect audio to the DAC.
     pub bit_perfect: bool,
+    /// Whether adaptive fallback is enabled when DAC hardware lacks native sample rate support.
+    #[serde(default)]
+    pub adaptive_fallback: bool,
     /// Whether Native DSD streaming is supported.
     pub dsd_native: bool,
     /// Whether DoP (DSD over PCM) streaming is supported.
@@ -360,11 +369,14 @@ impl Default for OutputCapabilities {
     fn default() -> Self {
         Self {
             backend_name: "Generic Output".to_owned(),
+            device_name: String::new(),
             sample_rates: vec![44100, 48000],
+            unsupported_rates: Vec::new(),
             bit_depths: vec![16],
             channels: 2,
             exclusive: false,
             bit_perfect: false,
+            adaptive_fallback: true,
             dsd_native: false,
             dsd_dop: false,
         }

@@ -897,6 +897,7 @@ dependencies = [
  "kiiaud-adapter-mpd",
  "kiiaud-adapter-web",
  "kiiaud-core",
+ "kiiaud-output-alsa",
  "kiiaud-playback",
  "tokio",
  "tracing",
