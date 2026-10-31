@@ -91,7 +91,7 @@ pub enum AsioHwFormat {
     Int24LSB,
     /// 32-bit signed integer little-endian (`ASIOSTInt32LSB`).
     Int32LSB,
-    /// 32-bit signed integer MSB-aligned in 32-bit container (`ASIOSTInt32LSB24`).
+    /// 32-bit signed integer with 24-bit data in LSB (`ASIOSTInt32LSB24`).
     Int32LSB24,
     /// 32-bit IEEE float little-endian (`ASIOSTFloat32LSB`).
     Float32LSB,
@@ -116,30 +116,73 @@ impl AsioHwFormat {
     }
 }
 
-/// Dual-channel FIFO audio queue feeding ASIO ping-pong buffer callbacks.
+/// Map Steinberg ASIO sample type ID to [`AsioHwFormat`].
+pub fn map_asio_sample_type(sample_type: sys::ASIOSampleType) -> AsioHwFormat {
+    match sample_type {
+        sys::ASIOSTInt16LSB => AsioHwFormat::Int16LSB,
+        sys::ASIOSTInt24LSB => AsioHwFormat::Int24LSB,
+        sys::ASIOSTInt32LSB => AsioHwFormat::Int32LSB,
+        sys::ASIOSTInt32LSB24 => AsioHwFormat::Int32LSB24,
+        sys::ASIOSTFloat32LSB => AsioHwFormat::Float32LSB,
+        sys::ASIOSTDSDInt8LSB1 => AsioHwFormat::DsdInt8LSB1,
+        sys::ASIOSTDSDInt8MSB1 => AsioHwFormat::DsdInt8MSB1,
+        other => {
+            tracing::warn!(
+                sample_type = other,
+                "Unknown or unhandled ASIO sample type, defaulting to Int32LSB"
+            );
+            AsioHwFormat::Int32LSB
+        }
+    }
+}
+
+/// Synchronized dual-channel FIFO audio queue feeding ASIO ping-pong buffer callbacks.
+#[derive(Debug, Default)]
+pub struct AsioRingBufferInner {
+    pub left: VecDeque<u8>,
+    pub right: VecDeque<u8>,
+    pub is_dsd: bool,
+}
+
+/// Thread-safe ring buffer with single-lock stereo synchronization preventing inter-channel phase drift.
 #[derive(Debug, Default)]
 pub struct AsioRingBuffer {
-    pub left: Mutex<VecDeque<u8>>,
-    pub right: Mutex<VecDeque<u8>>,
-    pub is_dsd: Mutex<bool>,
+    pub inner: Mutex<AsioRingBufferInner>,
 }
 
 impl AsioRingBuffer {
     pub fn new() -> Self {
         Self {
-            left: Mutex::new(VecDeque::with_capacity(131072)),
-            right: Mutex::new(VecDeque::with_capacity(131072)),
-            is_dsd: Mutex::new(false),
+            inner: Mutex::new(AsioRingBufferInner {
+                left: VecDeque::with_capacity(131072),
+                right: VecDeque::with_capacity(131072),
+                is_dsd: false,
+            }),
         }
     }
 
     pub fn clear(&self) {
-        self.left.lock().clear();
-        self.right.lock().clear();
+        let mut inner = self.inner.lock();
+        inner.left.clear();
+        inner.right.clear();
+    }
+
+    pub fn set_dsd(&self, dsd: bool) {
+        self.inner.lock().is_dsd = dsd;
+    }
+
+    pub fn is_dsd(&self) -> bool {
+        self.inner.lock().is_dsd
     }
 
     pub fn len_bytes(&self) -> usize {
-        self.left.lock().len()
+        self.inner.lock().left.len()
+    }
+
+    pub fn push(&self, left_data: &[u8], right_data: &[u8]) {
+        let mut inner = self.inner.lock();
+        inner.left.extend(left_data);
+        inner.right.extend(right_data);
     }
 }
 
@@ -167,20 +210,32 @@ unsafe extern "system" fn asio_buffer_switch_callback(
 
     let idx = if double_buffer_index == 0 { 0 } else { 1 };
     let req_bytes = ctx.buffer_size * ctx.bytes_per_sample;
-    let is_dsd = *ctx.ring_buffer.is_dsd.lock();
-    let silence_byte = if is_dsd { 0x69 } else { 0x00 };
+
+    let mut inner = ctx.ring_buffer.inner.lock();
+    let silence_byte = if inner.is_dsd { 0x69 } else { 0x00 };
+
+    // Synchronized read: both Left and Right channels drain the exact same number of bytes
+    let avail = inner.left.len().min(inner.right.len()).min(req_bytes);
 
     // Fill Channel 0 (Left)
     if let Some(info) = ctx.buffer_infos.first() {
         let dest = info.buffers[idx] as *mut u8;
         if !dest.is_null() {
-            let mut q = ctx.ring_buffer.left.lock();
-            let avail = q.len().min(req_bytes);
-            for i in 0..avail {
-                unsafe { *dest.add(i) = q.pop_front().unwrap_or(silence_byte) };
+            let mut copied = 0;
+            let (s1, s2) = inner.left.as_slices();
+            let c1 = s1.len().min(avail);
+            if c1 > 0 {
+                unsafe { std::ptr::copy_nonoverlapping(s1.as_ptr(), dest, c1) };
+                copied += c1;
             }
-            if avail < req_bytes {
-                unsafe { std::ptr::write_bytes(dest.add(avail), silence_byte, req_bytes - avail) };
+            let c2 = s2.len().min(avail - copied);
+            if c2 > 0 {
+                unsafe { std::ptr::copy_nonoverlapping(s2.as_ptr(), dest.add(copied), c2) };
+                copied += c2;
+            }
+            inner.left.drain(..copied);
+            if copied < req_bytes {
+                unsafe { std::ptr::write_bytes(dest.add(copied), silence_byte, req_bytes - copied) };
             }
         }
     }
@@ -190,13 +245,21 @@ unsafe extern "system" fn asio_buffer_switch_callback(
         let info = &ctx.buffer_infos[1];
         let dest = info.buffers[idx] as *mut u8;
         if !dest.is_null() {
-            let mut q = ctx.ring_buffer.right.lock();
-            let avail = q.len().min(req_bytes);
-            for i in 0..avail {
-                unsafe { *dest.add(i) = q.pop_front().unwrap_or(silence_byte) };
+            let mut copied = 0;
+            let (s1, s2) = inner.right.as_slices();
+            let c1 = s1.len().min(avail);
+            if c1 > 0 {
+                unsafe { std::ptr::copy_nonoverlapping(s1.as_ptr(), dest, c1) };
+                copied += c1;
             }
-            if avail < req_bytes {
-                unsafe { std::ptr::write_bytes(dest.add(avail), silence_byte, req_bytes - avail) };
+            let c2 = s2.len().min(avail - copied);
+            if c2 > 0 {
+                unsafe { std::ptr::copy_nonoverlapping(s2.as_ptr(), dest.add(copied), c2) };
+                copied += c2;
+            }
+            inner.right.drain(..copied);
+            if copied < req_bytes {
+                unsafe { std::ptr::write_bytes(dest.add(copied), silence_byte, req_bytes - copied) };
             }
         }
     }
@@ -430,17 +493,35 @@ impl AudioOutput for AsioAudioOutput {
                         );
                     }
 
-                    // Check default preferred channel format (default to 32-bit or 24-bit LSB)
-                    let hw = match sample_format {
-                        SampleFormat::S16Le => AsioHwFormat::Int16LSB,
-                        SampleFormat::S24_3Le => AsioHwFormat::Int24LSB,
-                        SampleFormat::S24Le => AsioHwFormat::Int32LSB24,
-                        SampleFormat::S32Le => AsioHwFormat::Int32LSB,
-                        SampleFormat::F32Le => AsioHwFormat::Float32LSB,
+                    // Reset IO format to PCM in case previous playback was DSD
+                    let mut io_format = sys::ASIOIoFormat {
+                        FormatType: sys::kAsioFormatPCM,
+                        ..Default::default()
+                    };
+                    let _ = (vtbl.future)(
+                        asio as *mut std::ffi::c_void,
+                        sys::kAsioSetIoFormat,
+                        &mut io_format as *mut _ as *mut std::ffi::c_void,
+                    );
+
+                    // Query native hardware channel format from ASIO driver
+                    let mut ch_info = sys::ASIOChannelInfo {
+                        channel: 0,
+                        isInput: 0,
+                        ..Default::default()
+                    };
+                    let hw = if (vtbl.getChannelInfo)(
+                        asio as *mut std::ffi::c_void,
+                        &mut ch_info,
+                    ) == sys::ASE_OK
+                    {
+                        map_asio_sample_type(ch_info.sampleType)
+                    } else {
+                        AsioHwFormat::Int32LSB
                     };
 
                     self.dop_encoder = None;
-                    *self.ring_buffer.is_dsd.lock() = false;
+                    self.ring_buffer.set_dsd(false);
 
                     (
                         AudioFormat::Pcm {
@@ -516,7 +597,7 @@ impl AudioOutput for AsioAudioOutput {
                             "ASIO Native DSD negotiated successfully"
                         );
                         self.dop_encoder = None;
-                        *self.ring_buffer.is_dsd.lock() = true;
+                        self.ring_buffer.set_dsd(true);
 
                         (
                             AudioFormat::Dsd {
@@ -539,7 +620,23 @@ impl AudioOutput for AsioAudioOutput {
                             (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dop_rate as f64);
                         let enc = DopEncoder::new(rate, channels as usize, layout, bit_order)?;
                         self.dop_encoder = Some(enc);
-                        *self.ring_buffer.is_dsd.lock() = false;
+                        self.ring_buffer.set_dsd(false);
+
+                        // Query channel info for DoP PCM container format
+                        let mut ch_info = sys::ASIOChannelInfo {
+                            channel: 0,
+                            isInput: 0,
+                            ..Default::default()
+                        };
+                        let dop_hw = if (vtbl.getChannelInfo)(
+                            asio as *mut std::ffi::c_void,
+                            &mut ch_info,
+                        ) == sys::ASE_OK
+                        {
+                            map_asio_sample_type(ch_info.sampleType)
+                        } else {
+                            AsioHwFormat::Int32LSB24
+                        };
 
                         (
                             AudioFormat::Dsd {
@@ -549,7 +646,7 @@ impl AudioOutput for AsioAudioOutput {
                                 bit_order,
                                 layout,
                             },
-                            AsioHwFormat::Int32LSB24,
+                            dop_hw,
                         )
                     }
                 }
@@ -608,12 +705,30 @@ impl AudioOutput for AsioAudioOutput {
 
             self.buffer_infos = buffer_infos.clone();
 
+            // Post-buffer creation channel format verification
+            let mut final_hw = hw_fmt;
+            let mut post_info = sys::ASIOChannelInfo {
+                channel: 0,
+                isInput: 0,
+                ..Default::default()
+            };
+            if (vtbl.getChannelInfo)(asio as *mut std::ffi::c_void, &mut post_info) == sys::ASE_OK {
+                final_hw = map_asio_sample_type(post_info.sampleType);
+            }
+
+            tracing::info!(
+                driver_sample_type = post_info.sampleType,
+                hw_format = ?final_hw,
+                buffer_size = buffer_sz,
+                "ASIO hardware stream configured"
+            );
+
             // Set global callback context
             *ACTIVE_ASIO_CONTEXT.lock() = Some(Arc::new(AsioCallbackContext {
                 ring_buffer: Arc::clone(&self.ring_buffer),
                 buffer_infos,
                 buffer_size: buffer_sz,
-                bytes_per_sample: hw_fmt.bytes_per_sample(),
+                bytes_per_sample: final_hw.bytes_per_sample(),
             }));
 
             // Start hardware streaming
@@ -624,7 +739,7 @@ impl AudioOutput for AsioAudioOutput {
                 )));
             }
 
-            self.hw_format = Some(hw_fmt);
+            self.hw_format = Some(final_hw);
             self.active_format = Some(negotiated);
             self.is_playing = true;
             self.ring_buffer.clear();
@@ -704,16 +819,13 @@ impl AudioOutput for AsioAudioOutput {
             }
         }
 
-        // Push into stereo ring buffers
-        {
-            let mut l = self.ring_buffer.left.lock();
-            let mut r = self.ring_buffer.right.lock();
-            l.extend(&self.left_scratch);
-            r.extend(&self.right_scratch);
-        }
+        // Push into synchronized stereo ring buffer
+        self.ring_buffer.push(&self.left_scratch, &self.right_scratch);
 
         // Buffer flow control: pace decoding with DAC playback
-        while self.ring_buffer.len_bytes() > (self.buffer_size * hw_fmt.bytes_per_sample() * 16) {
+        while self.is_playing
+            && self.ring_buffer.len_bytes() > (self.buffer_size * hw_fmt.bytes_per_sample() * 16)
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
 
@@ -810,6 +922,11 @@ pub fn pack_pcm_i32_to_asio(
     right: &mut Vec<u8>,
 ) -> Result<()> {
     let ch = channels.max(1);
+    let frames = samples.len() / ch;
+    let b_per_s = hw_fmt.bytes_per_sample();
+    left.reserve(frames * b_per_s);
+    right.reserve(frames * b_per_s);
+
     for chunk in samples.chunks(ch) {
         let l_sample = chunk[0];
         let r_sample = if chunk.len() > 1 { chunk[1] } else { l_sample };
@@ -827,9 +944,15 @@ pub fn pack_pcm_i32_to_asio(
                 left.extend_from_slice(&l_bytes[0..3]);
                 right.extend_from_slice(&r_bytes[0..3]);
             }
-            AsioHwFormat::Int32LSB | AsioHwFormat::Int32LSB24 => {
+            AsioHwFormat::Int32LSB => {
                 left.extend_from_slice(&l_sample.to_le_bytes());
                 right.extend_from_slice(&r_sample.to_le_bytes());
+            }
+            AsioHwFormat::Int32LSB24 => {
+                let l_s24 = l_sample >> 8;
+                let r_s24 = r_sample >> 8;
+                left.extend_from_slice(&l_s24.to_le_bytes());
+                right.extend_from_slice(&r_s24.to_le_bytes());
             }
             AsioHwFormat::Float32LSB => {
                 let l_f = (l_sample as f32) / 2_147_483_648.0;
@@ -856,6 +979,11 @@ pub fn pack_pcm_f32_to_asio(
     right: &mut Vec<u8>,
 ) -> Result<()> {
     let ch = channels.max(1);
+    let frames = samples.len() / ch;
+    let b_per_s = hw_fmt.bytes_per_sample();
+    left.reserve(frames * b_per_s);
+    right.reserve(frames * b_per_s);
+
     for chunk in samples.chunks(ch) {
         let l_sample = chunk[0];
         let r_sample = if chunk.len() > 1 { chunk[1] } else { l_sample };
@@ -865,9 +993,15 @@ pub fn pack_pcm_f32_to_asio(
                 left.extend_from_slice(&l_sample.to_le_bytes());
                 right.extend_from_slice(&r_sample.to_le_bytes());
             }
-            AsioHwFormat::Int32LSB | AsioHwFormat::Int32LSB24 => {
+            AsioHwFormat::Int32LSB => {
                 let l_i = (l_sample.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
                 let r_i = (r_sample.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
+                left.extend_from_slice(&l_i.to_le_bytes());
+                right.extend_from_slice(&r_i.to_le_bytes());
+            }
+            AsioHwFormat::Int32LSB24 => {
+                let l_i = (l_sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32;
+                let r_i = (r_sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32;
                 left.extend_from_slice(&l_i.to_le_bytes());
                 right.extend_from_slice(&r_i.to_le_bytes());
             }
@@ -985,6 +1119,38 @@ mod tests {
 
         assert_eq!(left, vec![0x78, 0x56, 0x34, 0x12]);
         assert_eq!(right, vec![0x44, 0x33, 0x22, 0x11]);
+    }
+
+    #[test]
+    fn test_pack_pcm_i32_s32lsb24() {
+        // Samples MSB-aligned in i32: 0x1234_5600 -> shifted >> 8 becomes 0x0012_3456
+        let samples = vec![0x1234_5600, 0x789A_BC00];
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        pack_pcm_i32_to_asio(&samples, 2, AsioHwFormat::Int32LSB24, &mut left, &mut right).unwrap();
+
+        assert_eq!(left, vec![0x56, 0x34, 0x12, 0x00]);
+        assert_eq!(right, vec![0xBC, 0x9A, 0x78, 0x00]);
+    }
+
+    #[test]
+    fn test_map_asio_sample_types() {
+        assert_eq!(map_asio_sample_type(sys::ASIOSTInt16LSB), AsioHwFormat::Int16LSB);
+        assert_eq!(map_asio_sample_type(sys::ASIOSTInt24LSB), AsioHwFormat::Int24LSB);
+        assert_eq!(map_asio_sample_type(sys::ASIOSTInt32LSB), AsioHwFormat::Int32LSB);
+        assert_eq!(map_asio_sample_type(sys::ASIOSTInt32LSB24), AsioHwFormat::Int32LSB24);
+        assert_eq!(map_asio_sample_type(sys::ASIOSTFloat32LSB), AsioHwFormat::Float32LSB);
+        assert_eq!(map_asio_sample_type(sys::ASIOSTDSDInt8LSB1), AsioHwFormat::DsdInt8LSB1);
+        assert_eq!(map_asio_sample_type(sys::ASIOSTDSDInt8MSB1), AsioHwFormat::DsdInt8MSB1);
+    }
+
+    #[test]
+    fn test_ring_buffer_push_clear() {
+        let rb = AsioRingBuffer::new();
+        rb.push(&[1, 2, 3], &[4, 5, 6]);
+        assert_eq!(rb.len_bytes(), 3);
+        rb.clear();
+        assert_eq!(rb.len_bytes(), 0);
     }
 
     #[test]
