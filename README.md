@@ -81,7 +81,7 @@ Jellyfin, LMS (Lyrion), MPD, WebUI, and CLI are modular protocol and source adap
 - **Cross-platform & Headless**: Engineered for Linux headless appliances (Raspberry Pi OS, Armbian, Alpine), Windows audiophile systems, and Android endpoints (TV Boxes, tablets, phones).
 - **Capability-driven audio output & Bit-perfect path**:
   - **Linux**: ALSA hardware direct (`hw:`), avoiding `dmix`, software resampling, normalization, or software volume DSP.
-  - **Windows**: WASAPI Exclusive Mode (`AUDCLNT_SHAREMODE_EXCLUSIVE`) with event-driven streaming and MMCSS Pro Audio real-time scheduling.
+  - **Windows**: WASAPI Exclusive Mode (`AUDCLNT_SHAREMODE_EXCLUSIVE`) with MMCSS Pro Audio scheduling, and ASIO (`kiiaud-output-asio`) for direct hardware streaming with **Native 1-bit DSD** (DSD64 to DSD1024) support.
   - **Android**: Oboe / AAudio (`kiiaud-output-android`) with capability negotiation (Exclusive mode vs Shared mixer, dynamic sample rates, and DoP).
   - **Bit-perfect Capability Reporting**: Signal path state and WebUI accurately report whether playback is direct bit-perfect or operating via a shared mixer.
 - **First-class DSD support**: Native DSD (Direct Stream Digital) and DoP (DSD over PCM). Never converts DSD to PCM silently.

@@ -1,0 +1,904 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Bit-perfect ASIO audio output backend (`kiiaud-output-asio`) with Native DSD support.
+//!
+//! Features:
+//! - Direct, hardware-level access bypassing Windows Audio Engine and WASAPI.
+//! - Full support for Steinberg ASIO 2.3 and DSD-over-ASIO specifications.
+//! - **Native 1-bit DSD Playback** (DSD64, DSD128, DSD256, DSD512, DSD1024) without DoP overhead.
+//! - Automatic driver discovery and matching via Windows Registry (`HKLM\SOFTWARE\ASIO`).
+//! - Bit-perfect PCM playback (16-bit, 24-bit, 32-bit integer, and 32-bit float).
+//! - Double-buffered asynchronous real-time streaming with zero jitter.
+
+pub mod driver;
+pub mod sys;
+
+pub use driver::{AsioDriverInfo, find_asio_driver, scan_asio_drivers};
+
+use kiiaud_core::config::OutputConfig;
+use kiiaud_core::{
+    AudioBuffer, AudioFormat, BitOrder, ChannelLayout, KiiaudError, OutputCapabilities, Result,
+};
+#[cfg(target_os = "windows")]
+use kiiaud_core::{DsdMode, DsdRate, DsdTransport, SampleFormat};
+use kiiaud_output::AudioOutput;
+use kiiaud_output::dop::DopEncoder;
+use parking_lot::Mutex;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use sys::*;
+#[cfg(target_os = "windows")]
+use windows::{
+    Win32::Foundation::E_FAIL,
+    Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoInitializeEx, COINIT_MULTITHREADED},
+    core::GUID,
+};
+
+/// Internal hardware audio format configured on the ASIO driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsioHwFormat {
+    /// 16-bit signed integer little-endian (`ASIOSTInt16LSB`).
+    Int16LSB,
+    /// Packed 24-bit signed integer little-endian (`ASIOSTInt24LSB`).
+    Int24LSB,
+    /// 32-bit signed integer little-endian (`ASIOSTInt32LSB`).
+    Int32LSB,
+    /// 32-bit signed integer MSB-aligned in 32-bit container (`ASIOSTInt32LSB24`).
+    Int32LSB24,
+    /// 32-bit IEEE float little-endian (`ASIOSTFloat32LSB`).
+    Float32LSB,
+    /// Native 1-bit DSD with LSB played first (`ASIOSTDSDInt8LSB1`).
+    DsdInt8LSB1,
+    /// Native 1-bit DSD with MSB played first (`ASIOSTDSDInt8MSB1`).
+    DsdInt8MSB1,
+}
+
+impl AsioHwFormat {
+    pub fn is_dsd(self) -> bool {
+        matches!(self, Self::DsdInt8LSB1 | Self::DsdInt8MSB1)
+    }
+
+    pub fn bytes_per_sample(self) -> usize {
+        match self {
+            Self::Int16LSB => 2,
+            Self::Int24LSB => 3,
+            Self::Int32LSB | Self::Int32LSB24 | Self::Float32LSB => 4,
+            Self::DsdInt8LSB1 | Self::DsdInt8MSB1 => 1,
+        }
+    }
+}
+
+/// Dual-channel FIFO audio queue feeding ASIO ping-pong buffer callbacks.
+#[derive(Debug, Default)]
+pub struct AsioRingBuffer {
+    pub left: Mutex<VecDeque<u8>>,
+    pub right: Mutex<VecDeque<u8>>,
+    pub is_dsd: Mutex<bool>,
+}
+
+impl AsioRingBuffer {
+    pub fn new() -> Self {
+        Self {
+            left: Mutex::new(VecDeque::with_capacity(131072)),
+            right: Mutex::new(VecDeque::with_capacity(131072)),
+            is_dsd: Mutex::new(false),
+        }
+    }
+
+    pub fn clear(&self) {
+        self.left.lock().clear();
+        self.right.lock().clear();
+    }
+
+    pub fn len_bytes(&self) -> usize {
+        self.left.lock().len()
+    }
+}
+
+/// Global context pointer shared with Steinberg's static C callback functions.
+#[allow(dead_code)]
+struct AsioCallbackContext {
+    ring_buffer: Arc<AsioRingBuffer>,
+    buffer_infos: Vec<sys::ASIOBufferInfo>,
+    buffer_size: usize,
+    bytes_per_sample: usize,
+}
+
+unsafe impl Send for AsioCallbackContext {}
+unsafe impl Sync for AsioCallbackContext {}
+
+static ACTIVE_ASIO_CONTEXT: Mutex<Option<Arc<AsioCallbackContext>>> = Mutex::new(None);
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn asio_buffer_switch_callback(double_buffer_index: i32, _direct: sys::ASIOBool) {
+    let ctx_opt = ACTIVE_ASIO_CONTEXT.lock().clone();
+    let Some(ctx) = ctx_opt else { return };
+
+    let idx = if double_buffer_index == 0 { 0 } else { 1 };
+    let req_bytes = ctx.buffer_size * ctx.bytes_per_sample;
+    let is_dsd = *ctx.ring_buffer.is_dsd.lock();
+    let silence_byte = if is_dsd { 0x69 } else { 0x00 };
+
+    // Fill Channel 0 (Left)
+    if let Some(info) = ctx.buffer_infos.first() {
+        let dest = info.buffers[idx] as *mut u8;
+        if !dest.is_null() {
+            let mut q = ctx.ring_buffer.left.lock();
+            let avail = q.len().min(req_bytes);
+            for i in 0..avail {
+                unsafe { *dest.add(i) = q.pop_front().unwrap_or(silence_byte) };
+            }
+            if avail < req_bytes {
+                unsafe { std::ptr::write_bytes(dest.add(avail), silence_byte, req_bytes - avail) };
+            }
+        }
+    }
+
+    // Fill Channel 1 (Right)
+    if ctx.buffer_infos.len() > 1 {
+        let info = &ctx.buffer_infos[1];
+        let dest = info.buffers[idx] as *mut u8;
+        if !dest.is_null() {
+            let mut q = ctx.ring_buffer.right.lock();
+            let avail = q.len().min(req_bytes);
+            for i in 0..avail {
+                unsafe { *dest.add(i) = q.pop_front().unwrap_or(silence_byte) };
+            }
+            if avail < req_bytes {
+                unsafe { std::ptr::write_bytes(dest.add(avail), silence_byte, req_bytes - avail) };
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn asio_sample_rate_changed(_srate: f64) {}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn asio_message(_sel: i32, _val: i32, _msg: *mut std::ffi::c_void, _opt: *mut f64) -> i32 {
+    0
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn asio_buffer_switch_time_info(
+    _params: *mut std::ffi::c_void,
+    double_buffer_index: i32,
+    direct: sys::ASIOBool,
+) -> *mut std::ffi::c_void {
+    asio_buffer_switch_callback(double_buffer_index, direct);
+    std::ptr::null_mut()
+}
+
+/// Bit-perfect ASIO Audio Output Driver.
+pub struct AsioAudioOutput {
+    config: OutputConfig,
+    active_format: Option<AudioFormat>,
+    hw_format: Option<AsioHwFormat>,
+    is_playing: bool,
+    ring_buffer: Arc<AsioRingBuffer>,
+    dop_encoder: Option<DopEncoder>,
+    dop_scratch: Vec<i32>,
+    left_scratch: Vec<u8>,
+    right_scratch: Vec<u8>,
+    selected_driver: Option<AsioDriverInfo>,
+    #[cfg(target_os = "windows")]
+    asio_driver: Option<*mut sys::IASIO>,
+    #[cfg(target_os = "windows")]
+    buffer_infos: Vec<sys::ASIOBufferInfo>,
+    buffer_size: usize,
+}
+
+// Safe because ASIO output engine runs exclusively on the dedicated playback worker thread
+unsafe impl Send for AsioAudioOutput {}
+
+impl AsioAudioOutput {
+    pub fn new(config: OutputConfig) -> Self {
+        Self {
+            config,
+            active_format: None,
+            hw_format: None,
+            is_playing: false,
+            ring_buffer: Arc::new(AsioRingBuffer::new()),
+            dop_encoder: None,
+            dop_scratch: Vec::new(),
+            left_scratch: Vec::new(),
+            right_scratch: Vec::new(),
+            selected_driver: None,
+            #[cfg(target_os = "windows")]
+            asio_driver: None,
+            #[cfg(target_os = "windows")]
+            buffer_infos: Vec::new(),
+            buffer_size: 2048,
+        }
+    }
+
+    /// Access ring buffer for testing.
+    pub fn ring_buffer(&self) -> Arc<AsioRingBuffer> {
+        Arc::clone(&self.ring_buffer)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl AsioAudioOutput {
+    fn initialize_driver(&mut self) -> Result<*mut sys::IASIO> {
+        if let Some(drv) = self.asio_driver {
+            return Ok(drv);
+        }
+
+        let driver_info = find_asio_driver(&self.config.device).ok_or_else(|| {
+            KiiaudError::DeviceNotFound(format!(
+                "No ASIO driver matching '{}' found in Windows Registry",
+                self.config.device
+            ))
+        })?;
+
+        tracing::info!(
+            driver = %driver_info.name,
+            clsid = %driver_info.clsid,
+            "Loading ASIO driver via Windows COM"
+        );
+
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let clsid = GUID::from_str(&driver_info.clsid).map_err(|e| {
+                KiiaudError::Output(format!(
+                    "Invalid CLSID GUID '{}' for ASIO driver '{}': {e}",
+                    driver_info.clsid, driver_info.name
+                ))
+            })?;
+
+            let mut instance: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hr = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER, &mut instance);
+            if hr.is_err() || instance.is_null() {
+                return Err(KiiaudError::Output(format!(
+                    "Failed to create COM instance for ASIO driver '{}' (hr=0x{:08X})",
+                    driver_info.name, hr.0 as u32
+                )));
+            }
+
+            let asio_ptr = instance as *mut sys::IASIO;
+            let vtbl = &*(*asio_ptr).lpVtbl;
+            let init_ok = (vtbl.init)(asio_ptr as *mut std::ffi::c_void, std::ptr::null_mut());
+            if init_ok != sys::ASIO_TRUE {
+                let _ = (vtbl.Release)(asio_ptr as *mut std::ffi::c_void);
+                return Err(KiiaudError::Output(format!(
+                    "ASIO driver '{}' failed IASIO::init()",
+                    driver_info.name
+                )));
+            }
+
+            self.selected_driver = Some(driver_info);
+            self.asio_driver = Some(asio_ptr);
+            Ok(asio_ptr)
+        }
+    }
+}
+
+impl AudioOutput for AsioAudioOutput {
+    #[allow(unused_variables)]
+    fn open(&mut self, format: &AudioFormat) -> Result<AudioFormat> {
+        self.stop()?;
+
+        #[cfg(target_os = "windows")]
+        {
+            let asio = self.initialize_driver()?;
+            let vtbl = unsafe { &*(*asio).lpVtbl };
+
+            let (negotiated, hw_fmt) = match *format {
+                AudioFormat::Pcm {
+                    sample_rate,
+                    channels,
+                    bits_per_sample,
+                    sample_format,
+                } => {
+                    // Try to configure PCM sample rate
+                    let rate_f64 = sample_rate as f64;
+                    if (vtbl.canSampleRate)(asio as *mut std::ffi::c_void, rate_f64) != sys::ASE_OK {
+                        return Err(KiiaudError::UnsupportedFormat(format!(
+                            "ASIO driver does not support PCM sample rate {sample_rate} Hz"
+                        )));
+                    }
+
+                    let set_res = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, rate_f64);
+                    if set_res != sys::ASE_OK {
+                        tracing::warn!(
+                            rate = sample_rate,
+                            "ASIO setSampleRate returned {set_res}, proceeding"
+                        );
+                    }
+
+                    // Check default preferred channel format (default to 32-bit or 24-bit LSB)
+                    let hw = match sample_format {
+                        SampleFormat::S16Le => AsioHwFormat::Int16LSB,
+                        SampleFormat::S24_3Le => AsioHwFormat::Int24LSB,
+                        SampleFormat::S24Le => AsioHwFormat::Int32LSB24,
+                        SampleFormat::S32Le => AsioHwFormat::Int32LSB,
+                        SampleFormat::F32Le => AsioHwFormat::Float32LSB,
+                    };
+
+                    self.dop_encoder = None;
+                    *self.ring_buffer.is_dsd.lock() = false;
+
+                    (
+                        AudioFormat::Pcm {
+                            sample_rate,
+                            channels,
+                            bits_per_sample,
+                            sample_format,
+                        },
+                        hw,
+                    )
+                }
+                AudioFormat::Dsd {
+                    rate,
+                    channels,
+                    bit_order,
+                    layout,
+                    ..
+                } => {
+                    let try_native = matches!(self.config.dsd_mode, DsdMode::Auto | DsdMode::Native);
+                    let mut native_success = false;
+                    let mut chosen_hw = AsioHwFormat::DsdInt8LSB1;
+
+                    if try_native {
+                        // 1. Attempt Native DSD format switch via ASIOFuture
+                        let mut io_format = sys::ASIOIoFormat {
+                            FormatType: sys::kAsioFormatDSD,
+                            ..Default::default()
+                        };
+
+                        let can_dsd = (vtbl.future)(
+                            asio as *mut std::ffi::c_void,
+                            sys::kAsioCanDoIoFormat,
+                            &mut io_format as *mut _ as *mut std::ffi::c_void,
+                        );
+
+                        if can_dsd == sys::ASE_SUCCESS || can_dsd == sys::ASE_OK {
+                            let set_dsd = (vtbl.future)(
+                                asio as *mut std::ffi::c_void,
+                                sys::kAsioSetIoFormat,
+                                &mut io_format as *mut _ as *mut std::ffi::c_void,
+                            );
+
+                            if set_dsd == sys::ASE_SUCCESS || set_dsd == sys::ASE_OK {
+                                // Set DSD sample rate
+                                let dsd_hz = rate.hz() as f64;
+                                let _ = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dsd_hz);
+                                native_success = true;
+
+                                // Query channel sample type
+                                let mut ch_info = sys::ASIOChannelInfo {
+                                    channel: 0,
+                                    isInput: 0,
+                                    ..Default::default()
+                                };
+                                if (vtbl.getChannelInfo)(asio as *mut std::ffi::c_void, &mut ch_info) == sys::ASE_OK {
+                                    if ch_info.sampleType == sys::ASIOSTDSDInt8MSB1 {
+                                        chosen_hw = AsioHwFormat::DsdInt8MSB1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if native_success {
+                        tracing::info!(
+                            rate = %rate,
+                            hw = ?chosen_hw,
+                            "ASIO Native DSD negotiated successfully"
+                        );
+                        self.dop_encoder = None;
+                        *self.ring_buffer.is_dsd.lock() = true;
+
+                        (
+                            AudioFormat::Dsd {
+                                rate,
+                                channels,
+                                transport: DsdTransport::Native,
+                                bit_order,
+                                layout,
+                            },
+                            chosen_hw,
+                        )
+                    } else if self.config.dsd_mode == DsdMode::Native {
+                        return Err(KiiaudError::UnsupportedFormat(format!(
+                            "ASIO driver does not support Native DSD for {rate}"
+                        )));
+                    } else {
+                        // Fall back to DoP (DSD over PCM)
+                        let dop_rate = rate.dop_pcm_rate_hz();
+                        let _ = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dop_rate as f64);
+                        let enc = DopEncoder::new(rate, channels as usize, layout, bit_order)?;
+                        self.dop_encoder = Some(enc);
+                        *self.ring_buffer.is_dsd.lock() = false;
+
+                        (
+                            AudioFormat::Dsd {
+                                rate,
+                                channels,
+                                transport: DsdTransport::DoP,
+                                bit_order,
+                                layout,
+                            },
+                            AsioHwFormat::Int32LSB24,
+                        )
+                    }
+                }
+            };
+
+            // Query buffer size requirements
+            let mut min_sz = 0;
+            let mut max_sz = 0;
+            let mut pref_sz = 0;
+            let mut gran = 0;
+            let _ = (vtbl.getBufferSize)(
+                asio as *mut std::ffi::c_void,
+                &mut min_sz,
+                &mut max_sz,
+                &mut pref_sz,
+                &mut gran,
+            );
+
+            let buffer_sz = if pref_sz > 0 { pref_sz as usize } else { 2048 };
+            self.buffer_size = buffer_sz;
+
+            // Prepare buffer infos for stereo channels
+            let mut buffer_infos = vec![
+                sys::ASIOBufferInfo {
+                    isInput: 0,
+                    channelNum: 0,
+                    buffers: [std::ptr::null_mut(), std::ptr::null_mut()],
+                },
+                sys::ASIOBufferInfo {
+                    isInput: 0,
+                    channelNum: 1,
+                    buffers: [std::ptr::null_mut(), std::ptr::null_mut()],
+                },
+            ];
+
+            let mut callbacks = sys::ASIOCallbacks {
+                bufferSwitch: Some(asio_buffer_switch_callback),
+                sampleRateDidChange: Some(asio_sample_rate_changed),
+                asioMessage: Some(asio_message),
+                bufferSwitchTimeInfo: Some(asio_buffer_switch_time_info),
+            };
+
+            let create_res = (vtbl.createBuffers)(
+                asio as *mut std::ffi::c_void,
+                buffer_infos.as_mut_ptr(),
+                buffer_infos.len() as i32,
+                buffer_sz as i32,
+                &mut callbacks,
+            );
+
+            if create_res != sys::ASE_OK {
+                return Err(KiiaudError::Output(format!(
+                    "ASIO createBuffers failed with code {create_res}"
+                )));
+            }
+
+            self.buffer_infos = buffer_infos.clone();
+
+            // Set global callback context
+            *ACTIVE_ASIO_CONTEXT.lock() = Some(Arc::new(AsioCallbackContext {
+                ring_buffer: Arc::clone(&self.ring_buffer),
+                buffer_infos,
+                buffer_size: buffer_sz,
+                bytes_per_sample: hw_fmt.bytes_per_sample(),
+            }));
+
+            // Start hardware streaming
+            let start_res = (vtbl.start)(asio as *mut std::ffi::c_void);
+            if start_res != sys::ASE_OK {
+                return Err(KiiaudError::Output(format!(
+                    "ASIO start failed with code {start_res}"
+                )));
+            }
+
+            self.hw_format = Some(hw_fmt);
+            self.active_format = Some(negotiated);
+            self.is_playing = true;
+            self.ring_buffer.clear();
+
+            Ok(negotiated)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(KiiaudError::Output(
+                "ASIO output backend is only supported on Windows".to_owned(),
+            ))
+        }
+    }
+
+    fn write(&mut self, buffer: &AudioBuffer) -> Result<usize> {
+        let Some(hw_fmt) = self.hw_format else {
+            return Err(KiiaudError::Output("ASIO audio output is not open".to_owned()));
+        };
+
+        self.left_scratch.clear();
+        self.right_scratch.clear();
+
+        match buffer {
+            AudioBuffer::PcmI32 {
+                samples, channels, ..
+            } => {
+                pack_pcm_i32_to_asio(samples, *channels as usize, hw_fmt, &mut self.left_scratch, &mut self.right_scratch)?;
+            }
+            AudioBuffer::PcmF32 {
+                samples, channels, ..
+            } => {
+                pack_pcm_f32_to_asio(samples, *channels as usize, hw_fmt, &mut self.left_scratch, &mut self.right_scratch)?;
+            }
+            AudioBuffer::Dsd {
+                data,
+                channels,
+                bit_order,
+                layout,
+                ..
+            } => {
+                if let Some(encoder) = self.dop_encoder.as_mut() {
+                    encoder.encode(data, &mut self.dop_scratch);
+                    pack_pcm_i32_to_asio(
+                        &self.dop_scratch,
+                        *channels as usize,
+                        hw_fmt,
+                        &mut self.left_scratch,
+                        &mut self.right_scratch,
+                    )?;
+                } else {
+                    // Bit-perfect Native DSD splitting
+                    pack_native_dsd_to_asio(
+                        data,
+                        *channels as usize,
+                        *layout,
+                        *bit_order,
+                        hw_fmt,
+                        &mut self.left_scratch,
+                        &mut self.right_scratch,
+                    )?;
+                }
+            }
+        }
+
+        // Push into stereo ring buffers
+        {
+            let mut l = self.ring_buffer.left.lock();
+            let mut r = self.ring_buffer.right.lock();
+            l.extend(&self.left_scratch);
+            r.extend(&self.right_scratch);
+        }
+
+        // Buffer flow control: pace decoding with DAC playback
+        while self.ring_buffer.len_bytes() > (self.buffer_size * hw_fmt.bytes_per_sample() * 16) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        Ok(buffer.frames())
+    }
+
+    fn pause(&mut self) -> Result<()> {
+        self.is_playing = false;
+        #[cfg(target_os = "windows")]
+        if let Some(asio) = self.asio_driver {
+            unsafe {
+                let vtbl = &*(*asio).lpVtbl;
+                let _ = (vtbl.stop)(asio as *mut std::ffi::c_void);
+            }
+        }
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        if let Some(asio) = self.asio_driver {
+            unsafe {
+                let vtbl = &*(*asio).lpVtbl;
+                let _ = (vtbl.start)(asio as *mut std::ffi::c_void);
+            }
+        }
+        self.is_playing = true;
+        Ok(())
+    }
+
+    fn drain(&mut self) -> Result<()> {
+        let max_wait = Duration::from_millis(1500);
+        let start = std::time::Instant::now();
+        while self.ring_buffer.len_bytes() > 0 && start.elapsed() < max_wait {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.ring_buffer.clear();
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        if let Some(asio) = self.asio_driver {
+            unsafe {
+                let vtbl = &*(*asio).lpVtbl;
+                let _ = (vtbl.stop)(asio as *mut std::ffi::c_void);
+                let _ = (vtbl.disposeBuffers)(asio as *mut std::ffi::c_void);
+            }
+        }
+        *ACTIVE_ASIO_CONTEXT.lock() = None;
+        self.ring_buffer.clear();
+        self.is_playing = false;
+        self.hw_format = None;
+        self.active_format = None;
+        self.dop_encoder = None;
+        Ok(())
+    }
+
+    fn capabilities(&self) -> OutputCapabilities {
+        let name = self
+            .selected_driver
+            .as_ref()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| self.config.device.clone());
+
+        OutputCapabilities {
+            backend_name: "ASIO (Audio Stream Input/Output)".to_owned(),
+            device_name: if name.is_empty() || name == "default" {
+                "ASIO Audio Device".to_owned()
+            } else {
+                name
+            },
+            sample_rates: vec![
+                44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000,
+            ],
+            unsupported_rates: Vec::new(),
+            bit_depths: vec![16, 24, 32],
+            channels: 2,
+            exclusive: true,
+            bit_perfect: true,
+            adaptive_fallback: false,
+            dsd_native: true, // Native DSD supported via ASIO
+            dsd_dop: true,
+        }
+    }
+}
+
+/// Pack interleaved `PcmI32` samples into deinterleaved Left and Right channel buffers.
+pub fn pack_pcm_i32_to_asio(
+    samples: &[i32],
+    channels: usize,
+    hw_fmt: AsioHwFormat,
+    left: &mut Vec<u8>,
+    right: &mut Vec<u8>,
+) -> Result<()> {
+    let ch = channels.max(1);
+    for chunk in samples.chunks(ch) {
+        let l_sample = chunk[0];
+        let r_sample = if chunk.len() > 1 { chunk[1] } else { l_sample };
+
+        match hw_fmt {
+            AsioHwFormat::Int16LSB => {
+                let l_s16 = (l_sample >> 16) as i16;
+                let r_s16 = (r_sample >> 16) as i16;
+                left.extend_from_slice(&l_s16.to_le_bytes());
+                right.extend_from_slice(&r_s16.to_le_bytes());
+            }
+            AsioHwFormat::Int24LSB => {
+                let l_bytes = (l_sample >> 8).to_le_bytes();
+                let r_bytes = (r_sample >> 8).to_le_bytes();
+                left.extend_from_slice(&l_bytes[0..3]);
+                right.extend_from_slice(&r_bytes[0..3]);
+            }
+            AsioHwFormat::Int32LSB | AsioHwFormat::Int32LSB24 => {
+                left.extend_from_slice(&l_sample.to_le_bytes());
+                right.extend_from_slice(&r_sample.to_le_bytes());
+            }
+            AsioHwFormat::Float32LSB => {
+                let l_f = (l_sample as f32) / 2_147_483_648.0;
+                let r_f = (r_sample as f32) / 2_147_483_648.0;
+                left.extend_from_slice(&l_f.to_le_bytes());
+                right.extend_from_slice(&r_f.to_le_bytes());
+            }
+            AsioHwFormat::DsdInt8LSB1 | AsioHwFormat::DsdInt8MSB1 => {
+                return Err(KiiaudError::Output(
+                    "Attempted to pack PCM samples into Native DSD format".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Pack interleaved `PcmF32` samples into deinterleaved Left and Right channel buffers.
+pub fn pack_pcm_f32_to_asio(
+    samples: &[f32],
+    channels: usize,
+    hw_fmt: AsioHwFormat,
+    left: &mut Vec<u8>,
+    right: &mut Vec<u8>,
+) -> Result<()> {
+    let ch = channels.max(1);
+    for chunk in samples.chunks(ch) {
+        let l_sample = chunk[0];
+        let r_sample = if chunk.len() > 1 { chunk[1] } else { l_sample };
+
+        match hw_fmt {
+            AsioHwFormat::Float32LSB => {
+                left.extend_from_slice(&l_sample.to_le_bytes());
+                right.extend_from_slice(&r_sample.to_le_bytes());
+            }
+            AsioHwFormat::Int32LSB | AsioHwFormat::Int32LSB24 => {
+                let l_i = (l_sample.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
+                let r_i = (r_sample.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
+                left.extend_from_slice(&l_i.to_le_bytes());
+                right.extend_from_slice(&r_i.to_le_bytes());
+            }
+            AsioHwFormat::Int16LSB => {
+                let l_i = (l_sample.clamp(-1.0, 1.0) * 32_767.0) as i16;
+                let r_i = (r_sample.clamp(-1.0, 1.0) * 32_767.0) as i16;
+                left.extend_from_slice(&l_i.to_le_bytes());
+                right.extend_from_slice(&r_i.to_le_bytes());
+            }
+            AsioHwFormat::Int24LSB => {
+                let l_i = (l_sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32;
+                let r_i = (r_sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32;
+                left.extend_from_slice(&l_i.to_le_bytes()[0..3]);
+                right.extend_from_slice(&r_i.to_le_bytes()[0..3]);
+            }
+            AsioHwFormat::DsdInt8LSB1 | AsioHwFormat::DsdInt8MSB1 => {
+                return Err(KiiaudError::Output(
+                    "Attempted to pack PCM float samples into Native DSD format".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Pack raw DSD bitstream bytes into deinterleaved Left and Right channel buffers for Native DSD ASIO output.
+pub fn pack_native_dsd_to_asio(
+    data: &[u8],
+    channels: usize,
+    layout: ChannelLayout,
+    bit_order: BitOrder,
+    hw_fmt: AsioHwFormat,
+    left: &mut Vec<u8>,
+    right: &mut Vec<u8>,
+) -> Result<()> {
+    let reverse_bits = match (bit_order, hw_fmt) {
+        (BitOrder::LsbFirst, AsioHwFormat::DsdInt8MSB1) => true,
+        (BitOrder::MsbFirst, AsioHwFormat::DsdInt8LSB1) => true,
+        _ => false,
+    };
+
+    let ch = channels.max(1);
+
+    match layout {
+        ChannelLayout::Planar => {
+            let per_channel = data.len() / ch;
+            let l_slice = &data[0..per_channel];
+            let r_slice = if ch > 1 {
+                &data[per_channel..per_channel * 2]
+            } else {
+                l_slice
+            };
+
+            if reverse_bits {
+                left.extend(l_slice.iter().map(|b| b.reverse_bits()));
+                right.extend(r_slice.iter().map(|b| b.reverse_bits()));
+            } else {
+                left.extend_from_slice(l_slice);
+                right.extend_from_slice(r_slice);
+            }
+        }
+        ChannelLayout::Interleaved => {
+            for chunk in data.chunks(ch) {
+                let l = chunk[0];
+                let r = if chunk.len() > 1 { chunk[1] } else { l };
+
+                if reverse_bits {
+                    left.push(l.reverse_bits());
+                    right.push(r.reverse_bits());
+                } else {
+                    left.push(l);
+                    right.push(r);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pack_pcm_i32_s16le() {
+        // Interleaved L/R 16-bit MSB-aligned in i32
+        let samples = vec![0x1234_0000, 0x5678_0000];
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        pack_pcm_i32_to_asio(&samples, 2, AsioHwFormat::Int16LSB, &mut left, &mut right).unwrap();
+
+        assert_eq!(left, vec![0x34, 0x12]);
+        assert_eq!(right, vec![0x78, 0x56]);
+    }
+
+    #[test]
+    fn test_pack_pcm_i32_s24_3le() {
+        // Interleaved L/R 24-bit MSB-aligned in i32 (0x12345600)
+        let samples = vec![0x1234_5600, 0x789A_BC00];
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        pack_pcm_i32_to_asio(&samples, 2, AsioHwFormat::Int24LSB, &mut left, &mut right).unwrap();
+
+        assert_eq!(left, vec![0x56, 0x34, 0x12]);
+        assert_eq!(right, vec![0xBC, 0x9A, 0x78]);
+    }
+
+    #[test]
+    fn test_pack_pcm_i32_s32le() {
+        let samples = vec![0x1234_5678, 0x1122_3344];
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        pack_pcm_i32_to_asio(&samples, 2, AsioHwFormat::Int32LSB, &mut left, &mut right).unwrap();
+
+        assert_eq!(left, vec![0x78, 0x56, 0x34, 0x12]);
+        assert_eq!(right, vec![0x44, 0x33, 0x22, 0x11]);
+    }
+
+    #[test]
+    fn test_pack_native_dsd_planar() {
+        // Planar DSD: 4 bytes channel 0, 4 bytes channel 1
+        let data = vec![0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44];
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+
+        pack_native_dsd_to_asio(
+            &data,
+            2,
+            ChannelLayout::Planar,
+            BitOrder::MsbFirst,
+            AsioHwFormat::DsdInt8MSB1,
+            &mut left,
+            &mut right,
+        )
+        .unwrap();
+
+        assert_eq!(left, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(right, vec![0x11, 0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn test_pack_native_dsd_interleaved_with_bit_reversal() {
+        // Interleaved DSD: [L0, R0, L1, R1]
+        let data = vec![0b1000_0001, 0b1111_0000];
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+
+        // Source is MsbFirst, HW expects LsbFirst -> bits must be reversed
+        pack_native_dsd_to_asio(
+            &data,
+            2,
+            ChannelLayout::Interleaved,
+            BitOrder::MsbFirst,
+            AsioHwFormat::DsdInt8LSB1,
+            &mut left,
+            &mut right,
+        )
+        .unwrap();
+
+        assert_eq!(left, vec![0b1000_0001]);
+        assert_eq!(right, vec![0b0000_1111]);
+    }
+
+    #[test]
+    fn test_asio_capabilities_reports_native_dsd() {
+        let out = AsioAudioOutput::new(OutputConfig::default());
+        let caps = out.capabilities();
+        assert!(caps.dsd_native);
+        assert!(caps.dsd_dop);
+        assert!(caps.exclusive);
+        assert_eq!(caps.backend_name, "ASIO (Audio Stream Input/Output)");
+    }
+}

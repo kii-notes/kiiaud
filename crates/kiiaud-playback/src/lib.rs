@@ -19,6 +19,7 @@ use kiiaud_decoder::{Decoder, SymphoniaAudioDecoder};
 use kiiaud_output::{AudioOutput, MockAudioOutput};
 use kiiaud_output_alsa::AlsaAudioOutput;
 use kiiaud_output_android::AndroidAudioOutput;
+use kiiaud_output_asio::AsioAudioOutput;
 use kiiaud_output_wasapi::WasapiAudioOutput;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -123,6 +124,8 @@ impl PlaybackEngine {
             Box::new(MockAudioOutput::new())
         } else if config.output.backend.eq_ignore_ascii_case("wasapi") {
             Box::new(WasapiAudioOutput::new(config.output.clone()))
+        } else if config.output.backend.eq_ignore_ascii_case("asio") {
+            Box::new(AsioAudioOutput::new(config.output.clone()))
         } else if config.output.backend.eq_ignore_ascii_case("android")
             || config.output.backend.eq_ignore_ascii_case("oboe")
         {

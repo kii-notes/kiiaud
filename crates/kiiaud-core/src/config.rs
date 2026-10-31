@@ -28,6 +28,7 @@ log_level = "info"
 # Audio output backend:
 #   - "alsa": Linux direct ALSA hardware transport (recommended for bit-perfect Hi-Fi)
 #   - "wasapi": Windows Exclusive WASAPI transport
+#   - "asio": Windows ASIO driver transport with Native 1-bit DSD support
 #   - "android" / "oboe": Android direct AudioTrack / AAudio
 #   - "mock" / "null": Headless dummy output for testing and CI
 backend = "alsa"
@@ -37,8 +38,8 @@ backend = "alsa"
 #   - Use direct hardware card syntax to bypass PulseAudio / PipeWire software mixing:
 #     e.g., "hw:CARD=Audio,DEV=0" (card by name) or "hw:0,0" (card by index).
 #   - Run `aplay -l` to discover your audio card and subdevice names.
-# On Windows WASAPI:
-#   - Device name substring (e.g. "DAC") or "default" for system primary device.
+# On Windows WASAPI / ASIO:
+#   - Device name substring (e.g. "SXW UAD ASIO", "DAC", "UAD") or "default" for primary device.
 device = "hw:CARD=Audio,DEV=0"
 
 # Enforce bit-perfect transport:

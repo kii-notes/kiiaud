@@ -77,7 +77,7 @@ struct Args {
     // -------------------------------------------------------------------------
     // Audio Output & Bit-Perfect Options (Overrides [output])
     // -------------------------------------------------------------------------
-    /// Override output backend (`alsa`, `wasapi`, `android` / `oboe`, or `mock`).
+    /// Override output backend (`alsa`, `wasapi`, `asio`, `android` / `oboe`, or `mock`).
     #[arg(short, long, help_heading = "Audio Output Options")]
     backend: Option<String>,
 

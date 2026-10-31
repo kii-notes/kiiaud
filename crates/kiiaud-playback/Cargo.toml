@@ -14,6 +14,7 @@ kiiaud-decoder.workspace = true
 kiiaud-output.workspace = true
 kiiaud-output-alsa.workspace = true
 kiiaud-output-wasapi.workspace = true
+kiiaud-output-asio.workspace = true
 kiiaud-output-android.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true

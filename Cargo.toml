@@ -6,6 +6,7 @@ members = [
     "crates/kiiaud-output",
     "crates/kiiaud-output-alsa",
     "crates/kiiaud-output-wasapi",
+    "crates/kiiaud-output-asio",
     "crates/kiiaud-output-android",
     "crates/kiiaud-playback",
     "crates/kiiaud-adapter-cli",
@@ -57,6 +58,7 @@ kiiaud-decoder = { path = "crates/kiiaud-decoder" }
 kiiaud-output = { path = "crates/kiiaud-output" }
 kiiaud-output-alsa = { path = "crates/kiiaud-output-alsa" }
 kiiaud-output-wasapi = { path = "crates/kiiaud-output-wasapi" }
+kiiaud-output-asio = { path = "crates/kiiaud-output-asio" }
 kiiaud-output-android = { path = "crates/kiiaud-output-android" }
 kiiaud-playback = { path = "crates/kiiaud-playback" }
 kiiaud-adapter-cli = { path = "crates/kiiaud-adapter-cli" }
