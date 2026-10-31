@@ -245,11 +245,8 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
-
       - name: Build Android release binaries
-        run: cargo ndk -t arm64-v8a -p 24 build --release --bin kiiaud --bin kiiaudctl
+        run: cargo build --release --target aarch64-linux-android --bin kiiaud --bin kiiaudctl
 
       - name: Package artifacts
         shell: bash
