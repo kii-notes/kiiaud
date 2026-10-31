@@ -360,10 +360,12 @@ name = "explicit-kiiaud"
 "#;
     std::fs::write(&test_cfg_path, toml_content).unwrap();
 
-    let (cfg, src) =
-        KiiaudConfig::resolve_config(Some(&test_cfg_path), false, false).unwrap();
+    let (cfg, src) = KiiaudConfig::resolve_config(Some(&test_cfg_path), false, false).unwrap();
     assert_eq!(cfg.daemon.name, "explicit-kiiaud");
-    assert_eq!(src, kiiaud_core::config::ConfigSource::Explicit(test_cfg_path.clone()));
+    assert_eq!(
+        src,
+        kiiaud_core::config::ConfigSource::Explicit(test_cfg_path.clone())
+    );
 
     let _ = std::fs::remove_file(&test_cfg_path);
     let _ = std::fs::remove_dir(&temp_dir);

@@ -20,7 +20,7 @@ use kiiaud_core::{
     AudioBuffer, AudioFormat, BitOrder, ChannelLayout, KiiaudError, OutputCapabilities, Result,
 };
 #[cfg(target_os = "windows")]
-use kiiaud_core::{DsdMode, DsdRate, DsdTransport, SampleFormat};
+use kiiaud_core::{DsdMode, DsdTransport, SampleFormat};
 use kiiaud_output::AudioOutput;
 use kiiaud_output::dop::DopEncoder;
 use parking_lot::Mutex;
@@ -29,13 +29,56 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]
-use sys::*;
-#[cfg(target_os = "windows")]
 use windows::{
-    Win32::Foundation::E_FAIL,
-    Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoInitializeEx, COINIT_MULTITHREADED},
+    Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx},
     core::GUID,
 };
+
+#[cfg(target_os = "windows")]
+#[link(name = "ole32")]
+unsafe extern "system" {
+    fn CoCreateInstance(
+        rclsid: *const windows::core::GUID,
+        punkouter: *mut std::ffi::c_void,
+        dwclscontext: u32,
+        riid: *const windows::core::GUID,
+        ppv: *mut *mut std::ffi::c_void,
+    ) -> windows::core::HRESULT;
+}
+
+#[cfg(target_os = "windows")]
+fn parse_guid(s: &str) -> std::result::Result<GUID, String> {
+    let s = s.trim().trim_start_matches('{').trim_end_matches('}');
+    if s.len() != 36 {
+        return Err(format!("Invalid GUID length: {}", s.len()));
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 5 {
+        return Err("GUID does not have 5 parts".to_string());
+    }
+    let data1 = u32::from_str_radix(parts[0], 16).map_err(|e| e.to_string())?;
+    let data2 = u16::from_str_radix(parts[1], 16).map_err(|e| e.to_string())?;
+    let data3 = u16::from_str_radix(parts[2], 16).map_err(|e| e.to_string())?;
+    if parts[3].len() != 4 || parts[4].len() != 12 {
+        return Err("Invalid GUID part lengths".to_string());
+    }
+    let p3 = u16::from_str_radix(parts[3], 16).map_err(|e| e.to_string())?;
+    let p4_0 = u16::from_str_radix(&parts[4][0..4], 16).map_err(|e| e.to_string())?;
+    let p4_1 = u32::from_str_radix(&parts[4][4..12], 16).map_err(|e| e.to_string())?;
+
+    let d4 = [
+        (p3 >> 8) as u8,
+        (p3 & 0xFF) as u8,
+        (p4_0 >> 8) as u8,
+        (p4_0 & 0xFF) as u8,
+        (p4_1 >> 24) as u8,
+        ((p4_1 >> 16) & 0xFF) as u8,
+        ((p4_1 >> 8) & 0xFF) as u8,
+        (p4_1 & 0xFF) as u8,
+    ];
+
+    Ok(GUID::from_values(data1, data2, data3, d4))
+}
 
 /// Internal hardware audio format configured on the ASIO driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +156,10 @@ unsafe impl Sync for AsioCallbackContext {}
 static ACTIVE_ASIO_CONTEXT: Mutex<Option<Arc<AsioCallbackContext>>> = Mutex::new(None);
 
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn asio_buffer_switch_callback(double_buffer_index: i32, _direct: sys::ASIOBool) {
+unsafe extern "system" fn asio_buffer_switch_callback(
+    double_buffer_index: i32,
+    _direct: sys::ASIOBool,
+) {
     let ctx_opt = ACTIVE_ASIO_CONTEXT.lock().clone();
     let Some(ctx) = ctx_opt else { return };
 
@@ -158,7 +204,12 @@ unsafe extern "system" fn asio_buffer_switch_callback(double_buffer_index: i32, 
 unsafe extern "system" fn asio_sample_rate_changed(_srate: f64) {}
 
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn asio_message(_sel: i32, _val: i32, _msg: *mut std::ffi::c_void, _opt: *mut f64) -> i32 {
+unsafe extern "system" fn asio_message(
+    _sel: i32,
+    _val: i32,
+    _msg: *mut std::ffi::c_void,
+    _opt: *mut f64,
+) -> i32 {
     0
 }
 
@@ -168,7 +219,9 @@ unsafe extern "system" fn asio_buffer_switch_time_info(
     double_buffer_index: i32,
     direct: sys::ASIOBool,
 ) -> *mut std::ffi::c_void {
-    asio_buffer_switch_callback(double_buffer_index, direct);
+    unsafe {
+        asio_buffer_switch_callback(double_buffer_index, direct);
+    }
     std::ptr::null_mut()
 }
 
@@ -229,7 +282,7 @@ impl AsioAudioOutput {
         }
 
         let driver_info = find_asio_driver(&self.config.device).ok_or_else(|| {
-            KiiaudError::DeviceNotFound(format!(
+            KiiaudError::Output(format!(
                 "No ASIO driver matching '{}' found in Windows Registry",
                 self.config.device
             ))
@@ -243,7 +296,7 @@ impl AsioAudioOutput {
 
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let clsid = GUID::from_str(&driver_info.clsid).map_err(|e| {
+            let clsid = parse_guid(&driver_info.clsid).map_err(|e| {
                 KiiaudError::Output(format!(
                     "Invalid CLSID GUID '{}' for ASIO driver '{}': {e}",
                     driver_info.clsid, driver_info.name
@@ -251,7 +304,30 @@ impl AsioAudioOutput {
             })?;
 
             let mut instance: *mut std::ffi::c_void = std::ptr::null_mut();
-            let hr = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER, &mut instance);
+            let mut hr = CoCreateInstance(
+                &clsid,
+                std::ptr::null_mut(),
+                1, /* CLSCTX_INPROC_SERVER */
+                &clsid,
+                &mut instance,
+            );
+            if hr.is_err() || instance.is_null() {
+                // Fallback to IUnknown interface ID: {00000000-0000-0000-C000-000000000046}
+                const IID_IUNKNOWN: GUID = GUID::from_values(
+                    0x00000000,
+                    0x0000,
+                    0x0000,
+                    [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+                );
+                hr = CoCreateInstance(
+                    &clsid,
+                    std::ptr::null_mut(),
+                    1,
+                    &IID_IUNKNOWN,
+                    &mut instance,
+                );
+            }
+
             if hr.is_err() || instance.is_null() {
                 return Err(KiiaudError::Output(format!(
                     "Failed to create COM instance for ASIO driver '{}' (hr=0x{:08X})",
@@ -283,9 +359,9 @@ impl AudioOutput for AsioAudioOutput {
         self.stop()?;
 
         #[cfg(target_os = "windows")]
-        {
+        unsafe {
             let asio = self.initialize_driver()?;
-            let vtbl = unsafe { &*(*asio).lpVtbl };
+            let vtbl = &*(*asio).lpVtbl;
 
             let (negotiated, hw_fmt) = match *format {
                 AudioFormat::Pcm {
@@ -296,7 +372,8 @@ impl AudioOutput for AsioAudioOutput {
                 } => {
                     // Try to configure PCM sample rate
                     let rate_f64 = sample_rate as f64;
-                    if (vtbl.canSampleRate)(asio as *mut std::ffi::c_void, rate_f64) != sys::ASE_OK {
+                    if (vtbl.canSampleRate)(asio as *mut std::ffi::c_void, rate_f64) != sys::ASE_OK
+                    {
                         return Err(KiiaudError::UnsupportedFormat(format!(
                             "ASIO driver does not support PCM sample rate {sample_rate} Hz"
                         )));
@@ -339,7 +416,8 @@ impl AudioOutput for AsioAudioOutput {
                     layout,
                     ..
                 } => {
-                    let try_native = matches!(self.config.dsd_mode, DsdMode::Auto | DsdMode::Native);
+                    let try_native =
+                        matches!(self.config.dsd_mode, DsdMode::Auto | DsdMode::Native);
                     let mut native_success = false;
                     let mut chosen_hw = AsioHwFormat::DsdInt8LSB1;
 
@@ -375,7 +453,11 @@ impl AudioOutput for AsioAudioOutput {
                                     isInput: 0,
                                     ..Default::default()
                                 };
-                                if (vtbl.getChannelInfo)(asio as *mut std::ffi::c_void, &mut ch_info) == sys::ASE_OK {
+                                if (vtbl.getChannelInfo)(
+                                    asio as *mut std::ffi::c_void,
+                                    &mut ch_info,
+                                ) == sys::ASE_OK
+                                {
                                     if ch_info.sampleType == sys::ASIOSTDSDInt8MSB1 {
                                         chosen_hw = AsioHwFormat::DsdInt8MSB1;
                                     }
@@ -410,7 +492,8 @@ impl AudioOutput for AsioAudioOutput {
                     } else {
                         // Fall back to DoP (DSD over PCM)
                         let dop_rate = rate.dop_pcm_rate_hz();
-                        let _ = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dop_rate as f64);
+                        let _ =
+                            (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dop_rate as f64);
                         let enc = DopEncoder::new(rate, channels as usize, layout, bit_order)?;
                         self.dop_encoder = Some(enc);
                         *self.ring_buffer.is_dsd.lock() = false;
@@ -516,7 +599,9 @@ impl AudioOutput for AsioAudioOutput {
 
     fn write(&mut self, buffer: &AudioBuffer) -> Result<usize> {
         let Some(hw_fmt) = self.hw_format else {
-            return Err(KiiaudError::Output("ASIO audio output is not open".to_owned()));
+            return Err(KiiaudError::Output(
+                "ASIO audio output is not open".to_owned(),
+            ));
         };
 
         self.left_scratch.clear();
@@ -526,12 +611,24 @@ impl AudioOutput for AsioAudioOutput {
             AudioBuffer::PcmI32 {
                 samples, channels, ..
             } => {
-                pack_pcm_i32_to_asio(samples, *channels as usize, hw_fmt, &mut self.left_scratch, &mut self.right_scratch)?;
+                pack_pcm_i32_to_asio(
+                    samples,
+                    *channels as usize,
+                    hw_fmt,
+                    &mut self.left_scratch,
+                    &mut self.right_scratch,
+                )?;
             }
             AudioBuffer::PcmF32 {
                 samples, channels, ..
             } => {
-                pack_pcm_f32_to_asio(samples, *channels as usize, hw_fmt, &mut self.left_scratch, &mut self.right_scratch)?;
+                pack_pcm_f32_to_asio(
+                    samples,
+                    *channels as usize,
+                    hw_fmt,
+                    &mut self.left_scratch,
+                    &mut self.right_scratch,
+                )?;
             }
             AudioBuffer::Dsd {
                 data,

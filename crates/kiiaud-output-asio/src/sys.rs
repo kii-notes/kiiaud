@@ -4,7 +4,12 @@
 //!
 //! Complies with Steinberg ASIO 2.3 specification and DSD-over-ASIO (Native DSD) extensions.
 
-#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code)]
+#![allow(
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals,
+    dead_code
+)]
 
 use std::ffi::c_void;
 
@@ -112,7 +117,6 @@ impl Default for ASIOBufferInfo {
 unsafe impl Send for ASIOBufferInfo {}
 unsafe impl Sync for ASIOBufferInfo {}
 
-
 /// Channel metadata returned by `getChannelInfo`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -141,7 +145,8 @@ impl Default for ASIOChannelInfo {
 /// ASIO Host Callbacks passed to `createBuffers`.
 #[repr(C)]
 pub struct ASIOCallbacks {
-    pub bufferSwitch: Option<unsafe extern "system" fn(doubleBufferIndex: i32, directProcess: ASIOBool)>,
+    pub bufferSwitch:
+        Option<unsafe extern "system" fn(doubleBufferIndex: i32, directProcess: ASIOBool)>,
     pub sampleRateDidChange: Option<unsafe extern "system" fn(sRate: f64)>,
     pub asioMessage: Option<
         unsafe extern "system" fn(
@@ -196,12 +201,10 @@ pub struct IASIOVtbl {
         preferredSize: *mut i32,
         granularity: *mut i32,
     ) -> ASIOError,
-    pub canSampleRate:
-        unsafe extern "system" fn(this: *mut c_void, sampleRate: f64) -> ASIOError,
+    pub canSampleRate: unsafe extern "system" fn(this: *mut c_void, sampleRate: f64) -> ASIOError,
     pub getSampleRate:
         unsafe extern "system" fn(this: *mut c_void, sampleRate: *mut f64) -> ASIOError,
-    pub setSampleRate:
-        unsafe extern "system" fn(this: *mut c_void, sampleRate: f64) -> ASIOError,
+    pub setSampleRate: unsafe extern "system" fn(this: *mut c_void, sampleRate: f64) -> ASIOError,
     pub getClockSources: unsafe extern "system" fn(
         this: *mut c_void,
         clocks: *mut c_void,
@@ -213,10 +216,8 @@ pub struct IASIOVtbl {
         sPos: *mut c_void,
         tStamp: *mut c_void,
     ) -> ASIOError,
-    pub getChannelInfo: unsafe extern "system" fn(
-        this: *mut c_void,
-        info: *mut ASIOChannelInfo,
-    ) -> ASIOError,
+    pub getChannelInfo:
+        unsafe extern "system" fn(this: *mut c_void, info: *mut ASIOChannelInfo) -> ASIOError,
     pub createBuffers: unsafe extern "system" fn(
         this: *mut c_void,
         bufferInfos: *mut ASIOBufferInfo,
@@ -226,7 +227,8 @@ pub struct IASIOVtbl {
     ) -> ASIOError,
     pub disposeBuffers: unsafe extern "system" fn(this: *mut c_void) -> ASIOError,
     pub controlPanel: unsafe extern "system" fn(this: *mut c_void) -> ASIOError,
-    pub future: unsafe extern "system" fn(this: *mut c_void, selector: i32, opt: *mut c_void) -> ASIOError,
+    pub future:
+        unsafe extern "system" fn(this: *mut c_void, selector: i32, opt: *mut c_void) -> ASIOError,
 }
 
 /// COM Interface Pointer to `IASIO`.

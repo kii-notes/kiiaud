@@ -53,109 +53,111 @@ pub fn scan_asio_drivers() -> Vec<AsioDriverInfo> {
 
 #[cfg(target_os = "windows")]
 unsafe fn scan_registry_key(root: HKEY, subkey_path: PCWSTR, out: &mut Vec<AsioDriverInfo>) {
-    let mut hkey = HKEY::default();
-    if RegOpenKeyExW(root, subkey_path, 0, KEY_READ, &mut hkey) != ERROR_SUCCESS {
-        return;
-    }
-
-    let mut index = 0u32;
-    loop {
-        let mut name_buf = [0u16; 256];
-        let mut name_len = name_buf.len() as u32;
-
-        let status = RegEnumKeyExW(
-            hkey,
-            index,
-            windows::core::PWSTR(name_buf.as_mut_ptr()),
-            &mut name_len,
-            None,
-            windows::core::PWSTR(std::ptr::null_mut()),
-            None,
-            None,
-        );
-
-        if status != ERROR_SUCCESS {
-            break;
+    unsafe {
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(root, subkey_path, 0, KEY_READ, &mut hkey) != ERROR_SUCCESS {
+            return;
         }
 
-        let driver_name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+        let mut index = 0u32;
+        loop {
+            let mut name_buf = [0u16; 256];
+            let mut name_len = name_buf.len() as u32;
 
-        // Open the driver's subkey to read CLSID and Description
-        let mut driver_hkey = HKEY::default();
-        let sub_pcwstr: Vec<u16> = driver_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
-        if RegOpenKeyExW(
-            hkey,
-            PCWSTR(sub_pcwstr.as_ptr()),
-            0,
-            KEY_READ,
-            &mut driver_hkey,
-        ) == ERROR_SUCCESS
-        {
-            let mut clsid_buf = [0u8; 512];
-            let mut clsid_len = clsid_buf.len() as u32;
-
-            let clsid_str = if RegQueryValueExW(
-                driver_hkey,
-                w!("CLSID"),
+            let status = RegEnumKeyExW(
+                hkey,
+                index,
+                windows::core::PWSTR(name_buf.as_mut_ptr()),
+                &mut name_len,
+                None,
+                windows::core::PWSTR(std::ptr::null_mut()),
                 None,
                 None,
-                Some(clsid_buf.as_mut_ptr()),
-                Some(&mut clsid_len),
-            ) == ERROR_SUCCESS
-            {
-                let u16_slice = std::slice::from_raw_parts(
-                    clsid_buf.as_ptr() as *const u16,
-                    (clsid_len as usize) / 2,
-                );
-                String::from_utf16_lossy(u16_slice)
-                    .trim_matches(char::from(0))
-                    .to_string()
-            } else {
-                String::new()
-            };
+            );
 
-            let mut desc_buf = [0u8; 512];
-            let mut desc_len = desc_buf.len() as u32;
-            let description = if RegQueryValueExW(
-                driver_hkey,
-                w!("Description"),
-                None,
-                None,
-                Some(desc_buf.as_mut_ptr()),
-                Some(&mut desc_len),
-            ) == ERROR_SUCCESS
-            {
-                let u16_slice = std::slice::from_raw_parts(
-                    desc_buf.as_ptr() as *const u16,
-                    (desc_len as usize) / 2,
-                );
-                let s = String::from_utf16_lossy(u16_slice)
-                    .trim_matches(char::from(0))
-                    .to_string();
-                if s.is_empty() { None } else { Some(s) }
-            } else {
-                None
-            };
-
-            let _ = RegCloseKey(driver_hkey);
-
-            if !clsid_str.is_empty() && !out.iter().any(|d| d.name == driver_name) {
-                out.push(AsioDriverInfo {
-                    name: driver_name,
-                    clsid: clsid_str,
-                    description,
-                });
+            if status != ERROR_SUCCESS {
+                break;
             }
+
+            let driver_name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+
+            // Open the driver's subkey to read CLSID and Description
+            let mut driver_hkey = HKEY::default();
+            let sub_pcwstr: Vec<u16> = driver_name
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+
+            if RegOpenKeyExW(
+                hkey,
+                PCWSTR(sub_pcwstr.as_ptr()),
+                0,
+                KEY_READ,
+                &mut driver_hkey,
+            ) == ERROR_SUCCESS
+            {
+                let mut clsid_buf = [0u8; 512];
+                let mut clsid_len = clsid_buf.len() as u32;
+
+                let clsid_str = if RegQueryValueExW(
+                    driver_hkey,
+                    w!("CLSID"),
+                    None,
+                    None,
+                    Some(clsid_buf.as_mut_ptr()),
+                    Some(&mut clsid_len),
+                ) == ERROR_SUCCESS
+                {
+                    let u16_slice = std::slice::from_raw_parts(
+                        clsid_buf.as_ptr() as *const u16,
+                        (clsid_len as usize) / 2,
+                    );
+                    String::from_utf16_lossy(u16_slice)
+                        .trim_matches(char::from(0))
+                        .to_string()
+                } else {
+                    String::new()
+                };
+
+                let mut desc_buf = [0u8; 512];
+                let mut desc_len = desc_buf.len() as u32;
+                let description = if RegQueryValueExW(
+                    driver_hkey,
+                    w!("Description"),
+                    None,
+                    None,
+                    Some(desc_buf.as_mut_ptr()),
+                    Some(&mut desc_len),
+                ) == ERROR_SUCCESS
+                {
+                    let u16_slice = std::slice::from_raw_parts(
+                        desc_buf.as_ptr() as *const u16,
+                        (desc_len as usize) / 2,
+                    );
+                    let s = String::from_utf16_lossy(u16_slice)
+                        .trim_matches(char::from(0))
+                        .to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                } else {
+                    None
+                };
+
+                let _ = RegCloseKey(driver_hkey);
+
+                if !clsid_str.is_empty() && !out.iter().any(|d| d.name == driver_name) {
+                    out.push(AsioDriverInfo {
+                        name: driver_name,
+                        clsid: clsid_str,
+                        description,
+                    });
+                }
+            }
+
+            index += 1;
         }
 
-        index += 1;
+        let _ = RegCloseKey(hkey);
     }
-
-    let _ = RegCloseKey(hkey);
 }
 
 /// Find an ASIO driver matching the target string (`"default"`, exact name, or case-insensitive substring).
@@ -172,7 +174,10 @@ pub fn find_asio_driver(target: &str) -> Option<AsioDriverInfo> {
     let target_lower = target.trim().to_lowercase();
 
     // 1. Exact match
-    if let Some(d) = drivers.iter().find(|d| d.name.eq_ignore_ascii_case(target.trim())) {
+    if let Some(d) = drivers
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(target.trim()))
+    {
         return Some(d.clone());
     }
 
@@ -186,4 +191,3 @@ pub fn find_asio_driver(target: &str) -> Option<AsioDriverInfo> {
 
     None
 }
-
