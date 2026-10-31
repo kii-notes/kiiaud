@@ -11,46 +11,10 @@ use kiiaud_adapter_jellyfin::run_jellyfin_adapter;
 use kiiaud_adapter_lms::run_lms_adapter;
 use kiiaud_adapter_mpd::run_mpd_server_with_dir;
 use kiiaud_adapter_web::run_web_server;
-use kiiaud_core::{AudioSource, DsdMode, KiiaudConfig, PlaybackCommand};
+use kiiaud_core::{AudioSource, DsdMode, KiiaudConfig, PlaybackCommand, parse_mac_address};
 use kiiaud_playback::PlaybackEngine;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
-
-fn parse_mac_address(s: &str) -> std::result::Result<[u8; 6], String> {
-    let clean = s.trim();
-    let parts: Vec<&str> = if clean.contains(':') {
-        clean.split(':').collect()
-    } else if clean.contains('-') {
-        clean.split('-').collect()
-    } else if clean.contains(',') {
-        clean.split(',').collect()
-    } else if clean.len() == 12 {
-        let mut out = [0u8; 6];
-        for i in 0..6 {
-            out[i] = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16)
-                .map_err(|e| format!("Invalid hex byte in MAC address: {e}"))?;
-        }
-        return Ok(out);
-    } else {
-        return Err("MAC address must be in format '02:4B:49:49:41:55', '02-4B-49-49-41-55', or 12 hex digits".to_owned());
-    };
-
-    if parts.len() != 6 {
-        return Err(format!(
-            "MAC address must have 6 octets, found {}",
-            parts.len()
-        ));
-    }
-
-    let mut out = [0u8; 6];
-    for (i, p) in parts.iter().enumerate() {
-        let p_trimmed = p.trim();
-        out[i] = u8::from_str_radix(p_trimmed, 16)
-            .or_else(|_| p_trimmed.parse::<u8>())
-            .map_err(|_| format!("Invalid octet '{p_trimmed}' in MAC address"))?;
-    }
-    Ok(out)
-}
 
 #[derive(Parser)]
 #[command(

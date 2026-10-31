@@ -109,7 +109,13 @@ server_port = 3483
 http_port = 9000
 player_name = "kiiaud Squeezebox"
 
-# Locally-administered virtual MAC address for LMS device tracking (6 bytes):
+# MAC address for LMS device tracking and persistence (6 bytes).
+# LMS tracks each player by this unique MAC address (playlists, volume, settings).
+# Supports multiple formats:
+#   1. Standard MAC string: "38:D5:47:15:E8:86" or "38-D5-47-15-E8-86"
+#   2. Hex byte array:      [0x38, 0xD5, 0x47, 0x15, 0xE8, 0x86]
+#   3. Decimal byte array:  [56, 213, 71, 21, 232, 134]
+# Default is locally-administered virtual MAC [0x02, 0x4B, 0x49, 0x49, 0x41, 0x55] ("KIIAU"):
 mac_address = [2, 75, 73, 73, 65, 85]
 "#;
 
@@ -562,6 +568,7 @@ pub struct LmsAdapterConfig {
     pub server_port: u16,
     pub http_port: u16,
     pub player_name: String,
+    #[serde(deserialize_with = "deserialize_mac_address")]
     pub mac_address: [u8; 6],
     /// Maximum sample rate in Hz to report to LMS HELO (e.g. 192000, 384000, 768000).
     /// If None, auto-detected from output capabilities or defaults to 192000.
@@ -570,6 +577,98 @@ pub struct LmsAdapterConfig {
     /// If None, auto-detected from output capabilities (true if DAC supports DSD, false otherwise).
     /// When false, LMS automatically transcodes DSD to PCM at <= max_sample_rate.
     pub dsd_support: Option<bool>,
+}
+
+/// Parses a MAC address from various string representations.
+///
+/// Supported formats:
+/// - Colon-separated: `"38:D5:47:15:E8:86"` or `"02:4B:49:49:41:55"`
+/// - Hyphen-separated: `"38-D5-47-15-E8-86"` or `"02-4B-49-49-41-55"`
+/// - Comma-separated: `"56, 213, 71, 21, 232, 134"`
+/// - 12-char hex string: `"38D54715E886"`
+pub fn parse_mac_address(s: &str) -> std::result::Result<[u8; 6], String> {
+    let clean = s.trim();
+    let parts: Vec<&str> = if clean.contains(':') {
+        clean.split(':').collect()
+    } else if clean.contains('-') {
+        clean.split('-').collect()
+    } else if clean.contains(',') {
+        clean.split(',').collect()
+    } else if clean.len() == 12 {
+        let mut out = [0u8; 6];
+        for i in 0..6 {
+            out[i] = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16)
+                .map_err(|e| format!("Invalid hex byte in MAC address: {e}"))?;
+        }
+        return Ok(out);
+    } else {
+        return Err("MAC address must be in format '38:D5:47:15:E8:86', '38-D5-47-15-E8-86', or 12 hex digits".to_owned());
+    };
+
+    if parts.len() != 6 {
+        return Err(format!(
+            "MAC address must have 6 octets, found {}",
+            parts.len()
+        ));
+    }
+
+    let mut out = [0u8; 6];
+    for (i, p) in parts.iter().enumerate() {
+        let p_trimmed = p.trim();
+        out[i] = u8::from_str_radix(p_trimmed, 16)
+            .or_else(|_| p_trimmed.parse::<u8>())
+            .map_err(|_| format!("Invalid octet '{p_trimmed}' in MAC address"))?;
+    }
+    Ok(out)
+}
+
+/// Custom Serde deserializer for `mac_address`.
+///
+/// Accepts both:
+/// - String notation: `"38:D5:47:15:E8:86"`, `"38-D5-47-15-E8-86"`, `"38D54715E886"`
+/// - Byte array: `[0x38, 0xD5, 0x47, 0x15, 0xE8, 0x86]` or `[56, 213, 71, 21, 232, 134]`
+pub fn deserialize_mac_address<'de, D>(deserializer: D) -> std::result::Result<[u8; 6], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct MacVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for MacVisitor {
+        type Value = [u8; 6];
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str(
+                "a 6-byte array (e.g. [0x38, 0xD5, 0x47, 0x15, 0xE8, 0x86] or [56, 213, 71, 21, 232, 134]) or a MAC string (e.g. '38:D5:47:15:E8:86')",
+            )
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            parse_mac_address(value).map_err(serde::de::Error::custom)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut out = [0u8; 6];
+            for (i, byte) in out.iter_mut().enumerate() {
+                *byte = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+            }
+            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom(
+                    "MAC address array must contain exactly 6 elements",
+                ));
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(MacVisitor)
 }
 
 impl Default for LmsAdapterConfig {

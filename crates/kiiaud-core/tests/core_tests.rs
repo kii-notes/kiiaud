@@ -159,6 +159,55 @@ listen = "0.0.0.0:6600"
 }
 
 #[test]
+fn test_lms_mac_address_formats() {
+    let expected = [0x38, 0xd5, 0x47, 0x15, 0xe8, 0x86];
+
+    // Format 1: Colon-delimited string
+    let cfg1 = KiiaudConfig::from_toml_str(
+        r#"
+[adapter.lms]
+enabled = true
+mac_address = "38:D5:47:15:E8:86"
+"#,
+    )
+    .unwrap();
+    assert_eq!(cfg1.adapter.lms.mac_address, expected);
+
+    // Format 2: Hyphen-delimited string (e.g. Windows format)
+    let cfg2 = KiiaudConfig::from_toml_str(
+        r#"
+[adapter.lms]
+enabled = true
+mac_address = "38-D5-47-15-E8-86"
+"#,
+    )
+    .unwrap();
+    assert_eq!(cfg2.adapter.lms.mac_address, expected);
+
+    // Format 3: Hex byte array
+    let cfg3 = KiiaudConfig::from_toml_str(
+        r#"
+[adapter.lms]
+enabled = true
+mac_address = [0x38, 0xD5, 0x47, 0x15, 0xE8, 0x86]
+"#,
+    )
+    .unwrap();
+    assert_eq!(cfg3.adapter.lms.mac_address, expected);
+
+    // Format 4: Decimal byte array
+    let cfg4 = KiiaudConfig::from_toml_str(
+        r#"
+[adapter.lms]
+enabled = true
+mac_address = [56, 213, 71, 21, 232, 134]
+"#,
+    )
+    .unwrap();
+    assert_eq!(cfg4.adapter.lms.mac_address, expected);
+}
+
+#[test]
 fn test_default_config_template_is_valid() {
     let cfg = KiiaudConfig::from_toml_str(kiiaud_core::config::DEFAULT_CONFIG_TEMPLATE)
         .expect("DEFAULT_CONFIG_TEMPLATE must be valid TOML");

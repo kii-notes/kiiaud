@@ -105,6 +105,37 @@ server_port = 3483
 http_port = 9000
 player_name = "kiiaud Squeezebox"
 
-# Locally-administered virtual MAC address for LMS device tracking (6 bytes):
+# MAC address for LMS device tracking and persistence (6 bytes).
+# LMS (SlimProto) identifies each player by its unique MAC address to persist playlists,
+# volume level, equalizer, and synchronization groups.
+#
+# Supported formats:
+#   1. Standard MAC string (Colon or Hyphen):
+#      mac_address = "38:D5:47:15:E8:86"
+#      mac_address = "38-D5-47-15-E8-86"
+#
+#   2. Hex byte array (prefix each byte with 0x):
+#      mac_address = [0x38, 0xD5, 0x47, 0x15, 0xE8, 0x86]
+#
+#   3. Decimal byte array (0-255 per byte):
+#      mac_address = [56, 213, 71, 21, 232, 134]
+#
+# Default: locally-administered virtual MAC [2, 75, 73, 73, 65, 85] (ASCII "KIIAU").
+# If multiple kiiaud endpoints run on the same LMS server, assign each a unique MAC!
+#
+# Quick lookup of physical MAC on your machine:
+#   - Windows: run `getmac` or `ipconfig /all` (Physical Address)
+#   - Linux:   run `ip link` or `cat /sys/class/net/eth0/address`
+#   - macOS:   run `ifconfig en0 | grep ether`
 mac_address = [2, 75, 73, 73, 65, 85]
+
+# Maximum sample rate in Hz to advertise to LMS HELO (e.g. 192000, 384000, 768000).
+# If commented out, auto-detected from output DAC hardware or defaults to 192000:
+# max_sample_rate = 192000
+
+# Whether to advertise native DSD (dsf, dff) playback support to LMS.
+# If commented out, auto-detected from DAC capabilities (true if DAC supports DSD, false otherwise).
+# When false, LMS automatically transcodes DSD to PCM at <= max_sample_rate:
+# dsd_support = false
+
 

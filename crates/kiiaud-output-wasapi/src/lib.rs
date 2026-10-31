@@ -23,18 +23,89 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
         Media::Audio::{
-            AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient,
+            AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE, IAudioClient,
             IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
             WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eConsole, eRender,
         },
-        System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx},
+        System::Com::{
+            CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, STGM_READ,
+        },
         System::Threading::{
             AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW,
             WaitForSingleObject,
         },
+        UI::Shell::PropertiesSystem::PROPERTYKEY,
     },
     core::{PCWSTR, w},
 };
+
+#[cfg(target_os = "windows")]
+const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
+    fmtid: windows::core::GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+    pid: 14,
+};
+
+#[cfg(target_os = "windows")]
+fn find_device(enumerator: &IMMDeviceEnumerator, target: &str) -> Option<IMMDevice> {
+    if target.is_empty() || target.eq_ignore_ascii_case("default") {
+        return unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }.ok();
+    }
+
+    // 1. Try directly as an endpoint ID string
+    let dev_wide: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    if let Ok(dev) = unsafe { enumerator.GetDevice(PCWSTR(dev_wide.as_ptr())) } {
+        return Some(dev);
+    }
+
+    // 2. Enumerate active audio endpoints and match by friendly name
+    if let Ok(collection) = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) } {
+        if let Ok(count) = unsafe { collection.GetCount() } {
+            let target_lower = target.trim().to_lowercase();
+            let mut partial_match = None;
+
+            for i in 0..count {
+                if let Ok(dev) = unsafe { collection.Item(i) } {
+                    if let Ok(store) = unsafe { dev.OpenPropertyStore(STGM_READ) } {
+                        if let Ok(prop) = unsafe { store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME) } {
+                            let name = prop.to_string();
+                            let name_trim = name.trim();
+                            let name_lower = name_trim.to_lowercase();
+
+                            if name_lower == target_lower {
+                                tracing::info!(
+                                    target,
+                                    device_name = %name_trim,
+                                    "Matched WASAPI audio device exactly by friendly name"
+                                );
+                                return Some(dev);
+                            }
+
+                            if name_lower.contains(&target_lower)
+                                || target_lower.contains(&name_lower)
+                            {
+                                if partial_match.is_none() {
+                                    partial_match = Some((dev, name_trim.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some((dev, name)) = partial_match {
+                tracing::info!(
+                    target,
+                    matched_name = %name,
+                    "Matched WASAPI audio device partially by friendly name"
+                );
+                return Some(dev);
+            }
+        }
+    }
+
+    None
+}
 
 #[cfg(target_os = "windows")]
 const KSDATAFORMAT_SUBTYPE_PCM: windows::core::GUID =
@@ -145,32 +216,20 @@ impl AudioOutput for WasapiAudioOutput {
         }
         .map_err(|e| KiiaudError::Output(format!("Failed to create MMDeviceEnumerator: {e}")))?;
 
-        let device: IMMDevice = if self.config.device.is_empty()
-            || self.config.device.eq_ignore_ascii_case("default")
-        {
+        let device: IMMDevice = if let Some(dev) = find_device(&enumerator, &self.config.device) {
+            dev
+        } else {
+            tracing::warn!(
+                device = %self.config.device,
+                "WASAPI device not found directly or by friendly name; falling back to default audio endpoint"
+            );
             unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }.map_err(|e| {
                 KiiaudError::Output(format!("Failed to get default audio endpoint: {e}"))
             })?
-        } else {
-            // Check if device is a wide-character endpoint ID string
-            let dev_wide: Vec<u16> = self
-                .config
-                .device
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
-            unsafe { enumerator.GetDevice(PCWSTR(dev_wide.as_ptr())) }.unwrap_or_else(|_| {
-                tracing::warn!(
-                    device = %self.config.device,
-                    "Device endpoint ID not found directly; falling back to default audio endpoint"
-                );
-                unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-                    .expect("Failed to get default audio endpoint")
-            })
         };
 
         // 3. Activate IAudioClient
-        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+        let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|e| KiiaudError::Output(format!("Failed to activate IAudioClient: {e}")))?;
 
         // 4. Negotiate bit-perfect format
@@ -314,7 +373,7 @@ impl AudioOutput for WasapiAudioOutput {
         let requested_period = (self.config.period_time_ms as i64 * 10_000).max(min_period);
 
         // 6. Initialize AudioClient with Exclusive Event-Driven mode
-        let init_res = unsafe {
+        let mut init_res = unsafe {
             client.Initialize(
                 AUDCLNT_SHAREMODE_EXCLUSIVE,
                 AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -324,6 +383,41 @@ impl AudioOutput for WasapiAudioOutput {
                 None,
             )
         };
+
+        if let Err(ref e) = init_res {
+            if e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED {
+                let aligned_frames = unsafe { client.GetBufferSize() }.map_err(|e| {
+                    KiiaudError::Output(format!("Failed to get aligned buffer size: {e}"))
+                })?;
+                let sample_rate = wave_ext.Format.nSamplesPerSec;
+                let aligned_period =
+                    ((10_000_000.0 * (aligned_frames as f64) / (sample_rate as f64)) + 0.5) as i64;
+
+                tracing::info!(
+                    requested_period,
+                    aligned_frames,
+                    aligned_period,
+                    "WASAPI exclusive buffer size not aligned (AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED); re-initializing with aligned period"
+                );
+
+                // Release previous client and re-activate from device
+                drop(client);
+                client = unsafe { device.Activate(CLSCTX_ALL, None) }.map_err(|e| {
+                    KiiaudError::Output(format!("Failed to re-activate IAudioClient: {e}"))
+                })?;
+
+                init_res = unsafe {
+                    client.Initialize(
+                        AUDCLNT_SHAREMODE_EXCLUSIVE,
+                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                        aligned_period,
+                        aligned_period,
+                        &wave_ext.Format as *const _,
+                        None,
+                    )
+                };
+            }
+        }
 
         if let Err(e) = init_res {
             return Err(KiiaudError::Output(format!(
@@ -348,6 +442,14 @@ impl AudioOutput for WasapiAudioOutput {
 
         let channels = negotiated_format.channels();
         let bytes_per_frame = (channels as usize) * selected_fmt.bytes_per_sample();
+
+        // Pre-fill buffer with silence so hardware has initial frames before Start()
+        if let Ok(p_buffer) = unsafe { render_client.GetBuffer(buffer_frames) } {
+            unsafe {
+                std::ptr::write_bytes(p_buffer, 0, (buffer_frames as usize) * bytes_per_frame);
+                let _ = render_client.ReleaseBuffer(buffer_frames, 0);
+            }
+        }
 
         // 9. Register thread with MMCSS "Pro Audio"
         let mut task_index = 0u32;

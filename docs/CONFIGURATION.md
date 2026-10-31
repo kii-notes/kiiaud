@@ -146,7 +146,120 @@ Client kết nối tới Logitech Media Server / Lyrion Music Server (giao thứ
 | `server_port` | Integer (u16) | `3483` | Cổng SlimProto TCP của LMS server. |
 | `http_port` | Integer (u16) | `9000` | Cổng HTTP Web của LMS để stream âm thanh. |
 | `player_name` | String | `"kiiaud Squeezebox"` | Tên player hiển thị trong giao diện LMS / Material Skin. |
-| `mac_address` | Array of 6 bytes | `[2, 75, 73, 73, 65, 85]` | Địa chỉ MAC ảo để LMS nhận diện và phân biệt player (`02:4B:49:49:41:55`). |
+| `mac_address` | String hoặc Array 6 bytes | `[2, 75, 73, 73, 65, 85]` | Địa chỉ MAC định danh player trong LMS. Hỗ trợ dạng chuỗi (`"38:D5:47:15:E8:86"`), mảng Hex (`[0x38, ...]`), hoặc mảng số nguyên thập phân (`[56, 213, ...]`). |
+| `max_sample_rate` | Option\<u32\> | `null` (auto) | Tần số lấy mẫu tối đa thông báo tới LMS trong frame HELO (ví dụ: `192000`, `384000`, `768000`). |
+| `dsd_support` | Option\<bool\> | `null` (auto) | Thông báo LMS hỗ trợ phát DSD trực tiếp (`dsf`, `dff`) hay yêu cầu LMS tự động transcode sang PCM. |
+
+#### 2.7.1. Hướng dẫn toàn diện: Xác định, Quy đổi và Cấu hình Địa chỉ MAC cho LMS
+
+##### 1. Tại sao LMS / Lyrion cần địa chỉ MAC?
+- Giao thức **SlimProto** của Logitech Media Server định danh và quản lý các máy nghe nhạc (Squeezebox, Squeezelite, kiiaud) duy nhất thông qua **địa chỉ MAC 6 byte**.
+- LMS dùng địa chỉ MAC này làm khóa chính để lưu trạng thái phiên nghe: danh sách bài hát đang phát (playlist), mức âm lượng (volume), bộ cân bằng âm thanh (equalizer), thiết lập plugin và liên kết nhóm phát đồng bộ đa phòng (sync group).
+- **Lưu ý quan trọng**: Nếu có hai thiết bị chạy kiiaud hoặc squeezelite trong cùng mạng LAN dùng chung một địa chỉ MAC, LMS sẽ coi chúng là cùng một player và gây ra xung đột điều khiển. Mỗi endpoint phải có một địa chỉ MAC riêng biệt.
+
+##### 2. Cách xác định địa chỉ MAC của máy tính
+Tùy thuộc vào hệ điều hành đang cài đặt `kiiaud`:
+
+- **Trên Windows**:
+  1. Mở PowerShell hoặc Command Prompt (`cmd`).
+  2. Chạy lệnh:
+     ```cmd
+     getmac /v
+     ```
+     hoặc:
+     ```cmd
+     ipconfig /all
+     ```
+  3. Tìm đến card mạng đang kết nối Internet/LAN (ví dụ `Ethernet` hoặc `Wi-Fi`), đọc giá trị tại dòng **Physical Address** (Địa chỉ vật lý), có dạng: `38-D5-47-15-E8-86`.
+
+- **Trên Linux** (Raspberry Pi, Ubuntu, Debian, Arch,...):
+  1. Mở Terminal và chạy:
+     ```bash
+     ip link
+     ```
+     hoặc đọc trực tiếp từ sysfs:
+     ```bash
+     cat /sys/class/net/eth0/address   # Thay eth0 bằng tên card mạng như wlan0, enp3s0
+     ```
+  2. Địa chỉ MAC sẽ hiển thị dạng: `38:d5:47:15:e8:86`.
+
+- **Trên macOS**:
+  1. Mở Terminal và chạy:
+     ```bash
+     ifconfig en0 | grep ether
+     ```
+  2. Kết quả có dạng: `ether 38:d5:47:15:e8:86`.
+
+##### 3. Các cách biểu diễn địa chỉ MAC trong file cấu hình kiiaud
+`kiiaud` hỗ trợ đầy đủ và linh hoạt các định dạng biểu diễn:
+
+- **Cách 1: Chuỗi ký tự chuẩn (Khuyên dùng - Đơn giản nhất)**
+  Dán trực tiếp chuỗi MAC bạn vừa copy (hỗ trợ cả dấu hai chấm `:` hoặc gạch nối `-` của Windows):
+  ```toml
+  [adapter.lms]
+  mac_address = "38:D5:47:15:E8:86"
+  # Hoặc:
+  # mac_address = "38-D5-47-15-E8-86"
+  ```
+
+- **Cách 2: Mảng Hex `0x..` (Chuẩn TOML nguyên bản)**
+  Giữ nguyên giá trị hex của từng byte và thêm tiền tố `0x`:
+  ```toml
+  [adapter.lms]
+  mac_address = [0x38, 0xD5, 0x47, 0x15, 0xE8, 0x86]
+  ```
+
+- **Cách 3: Mảng số nguyên thập phân (Decimal 0–255)**
+  Chuyển đổi từng byte hex thành số nguyên thập phân (tương đương với mẫu mặc định `[2, 75, 73, 73, 65, 85]`):
+  ```toml
+  [adapter.lms]
+  mac_address = [56, 213, 71, 21, 232, 134]
+  ```
+
+##### 4. Bảng và Công cụ quy đổi nhanh Hex sang Decimal
+Mỗi byte trong địa chỉ MAC gồm 2 ký tự Hex `XY`. Công thức tính sang số thập phân:
+$$\text{Giá trị Decimal} = (X \times 16) + Y$$
+*(với $A=10, B=11, C=12, D=13, E=14, F=15$)*
+
+| Byte Hex | Phép tính quy đổi | Giá trị Decimal |
+| :---: | :---: | :---: |
+| `38` | $3 \times 16 + 8 = 48 + 8$ | **56** |
+| `D5` | $13 \times 16 + 5 = 208 + 5$ | **213** |
+| `47` | $4 \times 16 + 7 = 64 + 7$ | **71** |
+| `15` | $1 \times 16 + 5 = 16 + 5$ | **21** |
+| `E8` | $14 \times 16 + 8 = 224 + 8$ | **232** |
+| `86` | $8 \times 16 + 6 = 128 + 6$ | **134** |
+
+**Lệnh quy đổi tự động 1 dòng:**
+
+- **PowerShell (Windows)**:
+  ```powershell
+  "[" + (("38:D5:47:15:E8:86" -split '[:-]' | ForEach-Object { [Convert]::ToByte($_, 16) }) -join ", ") + "]"
+  # Kết quả: [56, 213, 71, 21, 232, 134]
+  ```
+
+- **Python (Mọi nền tảng)**:
+  ```bash
+  python3 -c 'mac="38:D5:47:15:E8:86"; print([int(x, 16) for x in mac.replace("-", ":").split(":")])'
+  # Kết quả: [56, 213, 71, 21, 232, 134]
+  ```
+
+- **Bash / Linux**:
+  ```bash
+  echo "38:D5:47:15:E8:86" | awk -F'[:-]' '{printf "[%d, %d, %d, %d, %d, %d]\n", "0x"$1, "0x"$2, "0x"$3, "0x"$4, "0x"$5, "0x"$6}'
+  ```
+
+##### 5. Ghi đè địa chỉ MAC qua tham số dòng lệnh (CLI)
+Bạn có thể ghi đè địa chỉ MAC mà không cần sửa file `kiiaud.toml` bằng cờ `--lms-mac`:
+```bash
+kiiaud --lms-mac "38:D5:47:15:E8:86"
+```
+
+##### 6. Lưu ý về Địa chỉ MAC ảo (Locally-Administered MAC)
+Nếu không muốn dùng địa chỉ MAC thật của card mạng phần cứng (hoặc trên môi trường Docker / máy ảo không có MAC cố định):
+- Bạn hoàn toàn có thể tự sinh một địa chỉ MAC ảo. Theo tiêu chuẩn mạng IEEE 802, địa chỉ MAC quản trị nội bộ (*locally administered*) có bit thứ 2 của byte đầu tiên bằng `1`.
+- Các byte đầu hợp lệ phổ biến: `02`, `06`, `0A`, `0E`.
+- Ví dụ: Mặc định của `kiiaud` là `02:4B:49:49:41:55` (`[0x02, 0x4B, 0x49, 0x49, 0x41, 0x55]`), trong đó 5 byte sau chính là các ký tự mã ASCII của từ `"KIIAU"` (`[75, 73, 73, 65, 85]`).
 
 ---
 
