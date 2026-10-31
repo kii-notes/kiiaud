@@ -129,6 +129,7 @@ pub enum ConfigSource {
         system: Option<PathBuf>,
         user: PathBuf,
     },
+    AppDir(PathBuf),
     CurrentDir(PathBuf),
     GeneratedDefault(PathBuf),
     DefaultInMemory,
@@ -141,6 +142,7 @@ impl ConfigSource {
             ConfigSource::Explicit(p) => Some(p.clone()),
             ConfigSource::SystemOnly(p) => Some(p.clone()),
             ConfigSource::Merged { user, .. } => Some(user.clone()),
+            ConfigSource::AppDir(p) => Some(p.clone()),
             ConfigSource::CurrentDir(p) => Some(p.clone()),
             ConfigSource::GeneratedDefault(p) => Some(p.clone()),
             ConfigSource::DefaultInMemory => KiiaudConfig::user_config_path(),
@@ -162,6 +164,7 @@ impl std::fmt::Display for ConfigSource {
                 ),
                 None => write!(f, "user config: {}", user.display()),
             },
+            ConfigSource::AppDir(p) => write!(f, "application directory: {}", p.display()),
             ConfigSource::CurrentDir(p) => write!(f, "local working directory: {}", p.display()),
             ConfigSource::GeneratedDefault(p) => {
                 write!(f, "newly generated default config at: {}", p.display())
@@ -232,6 +235,38 @@ impl KiiaudConfig {
         }
     }
 
+    /// Return the configuration file located in the current working directory if present.
+    /// Checks for `./kiiaud.toml` and `./config.toml`.
+    pub fn current_dir_config_path() -> Option<PathBuf> {
+        let cand1 = PathBuf::from("kiiaud.toml");
+        if cand1.is_file() {
+            return Some(cand1);
+        }
+        let cand2 = PathBuf::from("config.toml");
+        if cand2.is_file() {
+            return Some(cand2);
+        }
+        None
+    }
+
+    /// Return the configuration file located in the application binary directory if present.
+    /// Checks for `<exe_dir>/kiiaud.toml` and `<exe_dir>/config.toml`.
+    pub fn app_dir_config_path() -> Option<PathBuf> {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(parent) = exe_path.parent() {
+                let cand1 = parent.join("kiiaud.toml");
+                if cand1.is_file() {
+                    return Some(cand1);
+                }
+                let cand2 = parent.join("config.toml");
+                if cand2.is_file() {
+                    return Some(cand2);
+                }
+            }
+        }
+        None
+    }
+
     /// Recursively merge two TOML values.
     ///
     /// If both values are tables, keys in `over` override or extend `base`.
@@ -258,11 +293,11 @@ impl KiiaudConfig {
     ///
     /// 1. If `explicit_path` is provided, load solely that file.
     /// 2. If `system_only` is true, load `/etc/kiiaud/config.toml` only.
-    /// 3. Otherwise (per-user mode):
-    ///    - Load `/etc/kiiaud/config.toml` as base (if present).
-    ///    - Load `~/.config/kiiaud/config.toml` (if present) and merge over base.
-    ///    - If neither exists, check `./kiiaud.toml` in the working directory.
-    ///    - If still no config exists and `auto_generate` is true, generate a default user config
+    /// 3. Otherwise (per-user / portable mode):
+    ///    - Check local working directory (`./kiiaud.toml`, `./config.toml`).
+    ///    - Check application directory (`<exe_dir>/kiiaud.toml`, `<exe_dir>/config.toml`).
+    ///    - Load `/etc/kiiaud/config.toml` as base (if present) and merge `~/.config/kiiaud/config.toml` (if present).
+    ///    - If no config exists anywhere and `auto_generate` is true, generate a default user config
     ///      at `~/.config/kiiaud/config.toml` and return it.
     ///    - Otherwise, return default in-memory configuration.
     pub fn resolve_config(
@@ -295,7 +330,19 @@ impl KiiaudConfig {
             }
         }
 
-        // Case 3: Per-user resolution with system fallback / merge
+        // Case 3: Local working directory (portable / dev mode)
+        if let Some(cwd_path) = Self::current_dir_config_path() {
+            let cfg = Self::from_file(&cwd_path)?;
+            return Ok((cfg, ConfigSource::CurrentDir(cwd_path)));
+        }
+
+        // Case 4: Application binary directory (portable installation)
+        if let Some(app_path) = Self::app_dir_config_path() {
+            let cfg = Self::from_file(&app_path)?;
+            return Ok((cfg, ConfigSource::AppDir(app_path)));
+        }
+
+        // Case 5: Per-user resolution with system fallback / merge
         let user_path_opt = Self::user_config_path();
         let sys_exists = sys_path.exists();
         let user_exists = user_path_opt.as_ref().map(|p| p.exists()).unwrap_or(false);
@@ -343,14 +390,7 @@ impl KiiaudConfig {
             return Ok((cfg, source));
         }
 
-        // Case 4: Check local ./kiiaud.toml (handy for dev or portable mode)
-        let local_path = PathBuf::from("kiiaud.toml");
-        if local_path.exists() {
-            let cfg = Self::from_file(&local_path)?;
-            return Ok((cfg, ConfigSource::CurrentDir(local_path)));
-        }
-
-        // Case 5: Brand new environment
+        // Case 6: Brand new environment (no config exists anywhere)
         if auto_generate {
             if let Some(target) = user_path_opt {
                 Self::generate_default_config_file(&target, false)?;

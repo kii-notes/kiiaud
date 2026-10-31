@@ -14,7 +14,7 @@ kiiaud hỗ trợ cả hai mô hình vận hành: **System-wide Daemon** (dành 
 | :--- | :--- | :--- | :--- |
 | **System-wide** | `/etc/kiiaud/config.toml` | `%ProgramData%\kiiaud\config.toml` | Cấu hình cấp hệ điều hành (phần cứng DAC, security roots) |
 | **Per-user** | `~/.config/kiiaud/config.toml`<br>*(hoặc `$XDG_CONFIG_HOME/kiiaud/config.toml`)* | `%APPDATA%\kiiaud\config.toml` | Cấu hình riêng cho từng user (Jellyfin account, WebUI port...) |
-| **Local Dev** | `./kiiaud.toml` | `.\kiiaud.toml` | Tiện lợi khi phát triển hoặc chạy portable trực tiếp từ repo |
+| **Portable / Local** | `./kiiaud.toml`<br>hoặc `<exe_dir>/kiiaud.toml` | `.\kiiaud.toml`<br>hoặc `<exe_dir>\kiiaud.toml` | Chạy độc lập (Portable), đóng gói kèm binary hoặc dev trực tiếp từ repo |
 
 ### 1.2. Thứ tự ưu tiên & Cơ chế nạp cấu hình
 
@@ -22,10 +22,11 @@ kiiaud hỗ trợ cả hai mô hình vận hành: **System-wide Daemon** (dành 
 ```
 1. [ƯU TIÊN TUYỆT ĐỐI] Các tham số Dòng lệnh (CLI Flags: --device, --dsd-mode, --bit-perfect, ...)
 2. File cấu hình chỉ định tường minh (--config <FILE>)
-3. Cấu hình Per-User (~/.config/kiiaud/config.toml)
-4. Cấu hình System-wide (/etc/kiiaud/config.toml)
-5. File cục bộ thư mục hiện tại (./kiiaud.toml)
-6. Cấu hình mặc định trong mã nguồn (Built-in Defaults)
+3. Cấu hình Cục bộ / Thư mục ứng dụng (Portable: ./kiiaud.toml, <exe_dir>/kiiaud.toml)
+4. Cấu hình Per-User (~/.config/kiiaud/config.toml) merge với System-wide
+5. Cấu hình System-wide (/etc/kiiaud/config.toml)
+6. Môi trường mới (không có cấu hình ở bất kỳ đâu): Tự động tạo file mẫu ~/.config/kiiaud/config.toml
+7. Cấu hình mặc định trong mã nguồn (Built-in Defaults)
 ```
 
 ```
@@ -43,17 +44,30 @@ kiiaud hỗ trợ cả hai mô hình vận hành: **System-wide Daemon** (dành 
                         │  Chế độ chạy là gì?   │
                         └───────────────────────┘
                           /                   \
-(Có cờ --system hoặc root)       (Chạy bình thường dưới quyền User)
-                        /                       \
-                       ▼                         ▼
-┌───────────────────────────┐   ┌──────────────────────────────────────────────┐
-│  SYSTEM-WIDE MODE         │   │  PER-USER MODE (Hierarchy Deep Merge)        │
-│  Chỉ đọc:                 │   │  1. Đọc /etc/kiiaud/config.toml (làm base)   │
-│  /etc/kiiaud/config.toml  │   │  2. Đọc ~/.config/kiiaud/config.toml (user)  │
-└───────────────────────────┘   │     và ghi đè (merge) lên cấu hình hệ thống   │
-                                │  3. Nếu không có cả hai: thử ./kiiaud.toml   │
-                                │  4. Môi trường mới: tự tạo file user mẫu     │
-                                └──────────────────────────────────────────────┘
+(Có cờ --system)         /                     \ (Chạy bình thường dưới quyền User)
+                        /                       ▼
+                       /       ┌────────────────────────────────────────────────┐
+                      /        │ 1. Thư mục hiện tại (./kiiaud.toml, config.toml)│
+                     /         │    hoặc Thư mục ứng dụng (<exe>/kiiaud.toml)   │
+                    /          └───────────────────────┬────────────────────────┘
+                   /                                   │ Có file portable?
+                  /                        Có ─────────┴───────── Không
+                 /                         │                       │
+                /                          ▼                       ▼
+               /               ┌───────────────────────┐ ┌──────────────────────────────┐
+              /                │ Nạp cấu hình Portable │ │ 2. Hierarchy Deep Merge:     │
+             /                 │ (Không ghi đè vào     │ │    Đọc /etc/kiiaud/config    │
+            /                  │  ~/.config)           │ │    Merge ~/.config/kiiaud/   │
+           /                   └───────────────────────┘ └──────────────┬───────────────┘
+          ▼                                                             │ Có ít nhất 1 file?
+┌───────────────────────────┐                                Có ────────┴──────── Không
+│  SYSTEM-WIDE MODE         │                                │                     │
+│  Chỉ đọc:                 │                                ▼                     ▼
+│  /etc/kiiaud/config.toml  │                    ┌───────────────────────┐ ┌────────────────────┐
+└───────────────────────────┘                    │ Nạp cấu hình đã merge │ │ 3. Lần đầu chạy:   │
+                                                 └───────────────────────┘ │    Tự tạo file mẫu │
+                                                                           │    tại ~/.config/  │
+                                                                           └────────────────────┘
 ```
 
 #### Quy ước Deep Merge (Table-level merge):

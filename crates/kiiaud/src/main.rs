@@ -362,7 +362,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Resolve configuration following hierarchy:
-    // explicit --config > system-only (--system) > merged (system + user) > ./kiiaud.toml > auto-generate user config
+    // explicit --config > system-only (--system) > local/app-dir portable (./kiiaud.toml, <exe>/kiiaud.toml) > merged (system + user) > auto-generate user config
     let (mut config, source) =
         KiiaudConfig::resolve_config(args.config.as_deref(), args.system, !args.no_auto_generate)?;
 

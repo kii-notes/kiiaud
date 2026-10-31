@@ -334,3 +334,41 @@ fn test_queue_move_swap_shuffle_batch() {
     // Song 2 is still current, wherever it was shuffled
     assert_eq!(queue.current().unwrap().id, ids[1]);
 }
+
+#[test]
+fn test_config_source_effective_save_path() {
+    use kiiaud_core::config::ConfigSource;
+
+    let app_path = PathBuf::from("/opt/kiiaud/kiiaud.toml");
+    let src_app = ConfigSource::AppDir(app_path.clone());
+    assert_eq!(src_app.effective_save_path(), Some(app_path));
+
+    let cwd_path = PathBuf::from("./kiiaud.toml");
+    let src_cwd = ConfigSource::CurrentDir(cwd_path.clone());
+    assert_eq!(src_cwd.effective_save_path(), Some(cwd_path));
+}
+
+#[test]
+fn test_resolve_config_explicit_and_helpers() {
+    let temp_dir = std::env::temp_dir().join(format!("kiiaud_test_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let test_cfg_path = temp_dir.join("kiiaud.toml");
+
+    let toml_content = r#"
+[daemon]
+name = "explicit-kiiaud"
+"#;
+    std::fs::write(&test_cfg_path, toml_content).unwrap();
+
+    let (cfg, src) =
+        KiiaudConfig::resolve_config(Some(&test_cfg_path), false, false).unwrap();
+    assert_eq!(cfg.daemon.name, "explicit-kiiaud");
+    assert_eq!(src, kiiaud_core::config::ConfigSource::Explicit(test_cfg_path.clone()));
+
+    let _ = std::fs::remove_file(&test_cfg_path);
+    let _ = std::fs::remove_dir(&temp_dir);
+
+    // Verify helper methods do not panic
+    let _ = KiiaudConfig::current_dir_config_path();
+    let _ = KiiaudConfig::app_dir_config_path();
+}
