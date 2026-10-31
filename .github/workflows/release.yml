@@ -96,21 +96,26 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i 's/Architectures: .*/Architectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
-            sudo tee /etc/apt/sources.list.d/arm64-ports.sources << 'EOF'
-          Types: deb
-          URIs: http://ports.ubuntu.com/ubuntu-ports/
-          Suites: noble noble-updates noble-backports noble-security
-          Components: main restricted universe multiverse
-          Architectures: arm64
-          EOF
+            if grep -q "^Architectures:" /etc/apt/sources.list.d/ubuntu.sources; then
+              sudo sed -i 's/^Architectures: .*/Architectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+            else
+              sudo sed -i '/^URIs:/i Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+            fi
+            cat << 'EOF' | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: noble noble-updates noble-backports noble-security
+Components: main restricted universe multiverse
+Architectures: arm64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
           else
             sudo sed -i -e 's/deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
-            sudo tee /etc/apt/sources.list.d/arm64-ports.list << 'EOF'
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse
-          EOF
+            cat << 'EOF' | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse
+EOF
           fi
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64
@@ -237,7 +242,7 @@ jobs:
         run: cargo install cargo-ndk
 
       - name: Build Android release binaries
-        run: cargo ndk -t arm64-v8a build --release --bin kiiaud --bin kiiaudctl
+        run: cargo ndk -t arm64-v8a -p 24 build --release --bin kiiaud --bin kiiaudctl
 
       - name: Package artifacts
         shell: bash

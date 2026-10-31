@@ -48,7 +48,7 @@ symphonia = { git = "https://github.com/M0Rf30/Symphonia", rev = "85aa8493557441
 
 # Networking
 reqwest = { version = "0.13", features = ["stream", "blocking", "json"] }
-tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 # Internal workspace crates
