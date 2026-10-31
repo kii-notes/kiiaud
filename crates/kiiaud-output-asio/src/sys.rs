@@ -71,23 +71,24 @@ pub const kAsioSetIoFormat: i32 = 0x23111961;
 pub const kAsioCanDoTimeInfo: i32 = 0x23111962;
 pub const kAsioCanDoTimeCode: i32 = 0x23111963;
 
-/// ASIO IO Format types for `kAsioSetIoFormat` and `kAsioCanDoIoFormat`.
-pub const kAsioFormatInvalid: i32 = 0;
-pub const kAsioFormatPCM: i32 = 1;
-pub const kAsioFormatDSD: i32 = 2;
+/// ASIO IO Format types for `kAsioSetIoFormat` and `kAsioCanDoIoFormat` (Steinberg ASIO 2.0+ DSD extension).
+pub const kAsioFormatInvalid: i32 = -1;
+pub const kAsioFormatPCM: i32 = 0;
+pub const kAsioFormatDSD: i32 = 1;
 
 /// ASIO IO Format parameter structure passed to `future(kAsioSetIoFormat, ...)`.
+/// Total size in Steinberg ASIO SDK is exactly 512 bytes (4-byte FormatType + 508-byte future padding).
 #[repr(C)]
 pub struct ASIOIoFormat {
     pub FormatType: i32,
-    pub future: [u8; 512],
+    pub future: [u8; 508],
 }
 
 impl Default for ASIOIoFormat {
     fn default() -> Self {
         Self {
             FormatType: kAsioFormatInvalid,
-            future: [0; 512],
+            future: [0; 508],
         }
     }
 }

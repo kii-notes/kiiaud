@@ -14,6 +14,7 @@ kiiaud/
 │   ├── kiiaud-output/            # AudioOutput trait, DoP encoder & mock/sink backends
 │   │   ├── kiiaud-output-alsa/   # ALSA hardware direct output for Linux (Bit-perfect, Native DSD, DoP)
 │   │   ├── kiiaud-output-wasapi/ # WASAPI Exclusive Mode output for Windows (Bit-perfect, DoP, MMCSS)
+│   │   ├── kiiaud-output-asio/   # Steinberg ASIO 2.3 output for Windows (Bit-perfect, Native 1-bit DSD to DSD1024, DoP)
 │   │   └── kiiaud-output-android/# Android output via Oboe / AAudio (Capability-driven, Exclusive/Shared, DoP)
 │   ├── kiiaud-adapter-jellyfin/  # Jellyfin "Play To" remote control adapter (WebSocket + REST)
 │   ├── kiiaud-adapter-lms/       # LMS / Lyrion SlimProto client adapter (Squeezelite-like)
@@ -180,6 +181,7 @@ pub trait AudioOutput: Send {
 
 - **ALSA Hardware Direct (`kiiaud-output-alsa`)**: The primary production output for Linux/RPi 5.
 - **WASAPI Exclusive Mode (`kiiaud-output-wasapi`)**: Bit-perfect production output for Windows (bypasses Windows Audio Engine, event-driven streaming, MMCSS "Pro Audio", DoP for DSD).
+- **ASIO Hardware Direct (`kiiaud-output-asio`)**: Bit-perfect production output for Windows with **Native 1-bit DSD (DSD64 to DSD1024)** support, double-buffered zero-jitter streaming, and automatic Registry driver discovery.
 - **Android Oboe / AAudio (`kiiaud-output-android`)**: Native Android output backend leveraging Google's Oboe library. Supports capability negotiation (Exclusive mode vs Shared mixer, dynamic sample rates, and DoP streaming).
 - **Mock/Sink Output**: Used for unit tests and local development across platforms.
 - **Extensibility**: Future backends (e.g. macOS CoreAudio, PipeWire) can be added without modifying the engine or decoders.
@@ -203,7 +205,15 @@ In `kiiaud`, **bit-perfect playback is treated as a capability of the output bac
 - Supports bit-perfect DSD via **DoP (DSD over PCM)** (`176.4kHz` for DSD64, `352.8kHz` for DSD128, `705.6kHz` for DSD256).
 - Registers audio threads with Windows Multimedia Class Scheduler Service (**MMCSS**) under `"Pro Audio"` characteristics.
 
-### 9.3 Android Oboe / AAudio Pipeline (`kiiaud-output-android`)
+### 9.3 ASIO Audio Pipeline (`kiiaud-output-asio`) (Windows)
+- Direct hardware streaming using Steinberg ASIO 2.3 specification, bypassing all Windows audio subsystems.
+- **Automatic Driver Discovery**: Scans Windows Registry (`HKLM\SOFTWARE\ASIO` and `HKLM\SOFTWARE\WOW6432Node\ASIO`) to resolve driver CLSIDs automatically.
+- **Native 1-bit DSD**: Leverages Steinberg ASIO 2.0+ DSD extensions (`kAsioSetIoFormat`, `ASIOSTDSDInt8LSB1` / `ASIOSTDSDInt8MSB1`) for bit-perfect streaming from **DSD64 up to DSD1024** without DoP bandwidth overhead.
+- **Adaptive Fallback to DoP**: If the ASIO driver does not support native DSD, `dsd_mode = "auto"` automatically frames DSD into bit-perfect DoP v1.1.
+- **Double-Buffered Asynchronous Streaming**: Push-to-pull ring buffer architecture synchronized with ASIO hardware buffer switch callbacks (`bufferSwitch` / `bufferSwitchTimeInfo`).
+- **Comprehensive PCM Formats**: Supports `Int16LSB`, packed `Int24LSB`, `Int32LSB`, `Int32LSB24`, and `Float32LSB` at sample rates from 44.1kHz up to 768kHz.
+
+### 9.4 Android Oboe / AAudio Pipeline (`kiiaud-output-android`)
 - **Oboe / AAudio HAL**: Leverages AAudio (Android 8.1+) with fallback to OpenSL ES for low-latency streaming to USB DACs or internal audio hardware.
 - **Push-to-Pull Bridge**: An internal lock-free ring buffer bridges the playback engine's synchronous `write()` thread to Oboe's asynchronous real-time audio callback thread.
 - **Exclusive vs Shared Mode**: If configured for `bit_perfect = true`, requests `SharingMode::Exclusive` and `PerformanceMode::LowLatency`. If the Android device or HAL permits exclusive access (e.g. specialized Android DAP or USB DAC direct path), bit-perfect is maintained. If the HAL falls back to `SharingMode::Shared`, capability reporting flags `bit_perfect = false` and signals that the stream is routed through the system mixer.
@@ -220,11 +230,12 @@ In `kiiaud`, **bit-perfect playback is treated as a capability of the output bac
 DSD Sources:
 DSF / DFF / WavPack DSD (.wv)
    │
-   ├── Native DSD mode (SND_PCM_FORMAT_DSD_U32_BE / LE)
-   │   └── Sent directly to DACs supporting native DSD over USB/I2S
+   ├── Native DSD mode:
+   │   ├── Linux ALSA: SND_PCM_FORMAT_DSD_U32_BE / LE (Direct USB/I2S)
+   │   └── Windows ASIO: ASIOSTDSDInt8LSB1 / ASIOSTDSDInt8MSB1 (DSD64 to DSD1024)
    │
-   └── DoP mode (DSD over PCM)
-       └── Packed into 24-bit PCM frames (16-bit DSD + 8-bit 0x05/0xFA markers)
+   └── DoP mode (DSD over PCM):
+       └── Packed into 24/32-bit PCM frames (16-bit DSD + 8-bit 0x05/0xFA markers)
 ```
 
 If the DAC does not support native DSD or DoP at the required rate, `kiiaud` logs an explicit error or halts playback; it will never secretly downmix to PCM while claiming bit-perfect playback.

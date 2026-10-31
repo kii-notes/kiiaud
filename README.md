@@ -160,13 +160,19 @@ sudo make install-system
 # Installs systemd system unit to /etc/systemd/system/kiiaud.service
 ```
 
-### Configuration Management
+### Configuration & Quick Usage
 ```bash
 # Generate default config with comments:
 kiiaud --generate-config
 
 # Validate configuration:
 kiiaud --check-config
+
+# Run with Windows ASIO output backend (Native 1-bit DSD to DSD1024):
+kiiaud -b asio -d "SXW UAD ASIO" --dsd-mode auto
+
+# Inspect DAC hardware capabilities and registered ASIO drivers:
+kiiaud -b asio --dac-info
 ```
 See [Configuration Reference](docs/CONFIGURATION.md) for full details on hierarchy, options, and security.
 

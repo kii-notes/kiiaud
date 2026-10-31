@@ -20,7 +20,7 @@ use kiiaud_core::{
     AudioBuffer, AudioFormat, BitOrder, ChannelLayout, KiiaudError, OutputCapabilities, Result,
 };
 #[cfg(target_os = "windows")]
-use kiiaud_core::{DsdMode, DsdTransport, SampleFormat};
+use kiiaud_core::{DsdMode, DsdTransport};
 use kiiaud_output::AudioOutput;
 use kiiaud_output::dop::DopEncoder;
 use parking_lot::Mutex;
@@ -476,24 +476,7 @@ impl AudioOutput for AsioAudioOutput {
                     bits_per_sample,
                     sample_format,
                 } => {
-                    // Try to configure PCM sample rate
-                    let rate_f64 = sample_rate as f64;
-                    if (vtbl.canSampleRate)(asio as *mut std::ffi::c_void, rate_f64) != sys::ASE_OK
-                    {
-                        return Err(KiiaudError::UnsupportedFormat(format!(
-                            "ASIO driver does not support PCM sample rate {sample_rate} Hz"
-                        )));
-                    }
-
-                    let set_res = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, rate_f64);
-                    if set_res != sys::ASE_OK {
-                        tracing::warn!(
-                            rate = sample_rate,
-                            "ASIO setSampleRate returned {set_res}, proceeding"
-                        );
-                    }
-
-                    // Reset IO format to PCM in case previous playback was DSD
+                    // Reset IO format to standard PCM first in case previous playback was DSD
                     let mut io_format = sys::ASIOIoFormat {
                         FormatType: sys::kAsioFormatPCM,
                         ..Default::default()
@@ -503,6 +486,27 @@ impl AudioOutput for AsioAudioOutput {
                         sys::kAsioSetIoFormat,
                         &mut io_format as *mut _ as *mut std::ffi::c_void,
                     );
+
+                    // Configure PCM sample rate
+                    let rate_f64 = sample_rate as f64;
+                    let can_res = (vtbl.canSampleRate)(asio as *mut std::ffi::c_void, rate_f64);
+                    if can_res != sys::ASE_OK && can_res != sys::ASE_SUCCESS {
+                        // Some drivers return an error for canSampleRate, but setSampleRate succeeds
+                        let set_res = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, rate_f64);
+                        if set_res != sys::ASE_OK && set_res != sys::ASE_SUCCESS {
+                            return Err(KiiaudError::UnsupportedFormat(format!(
+                                "ASIO driver does not support PCM sample rate {sample_rate} Hz (canSampleRate: {can_res}, setSampleRate: {set_res})"
+                            )));
+                        }
+                    } else {
+                        let set_res = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, rate_f64);
+                        if set_res != sys::ASE_OK && set_res != sys::ASE_SUCCESS {
+                            tracing::warn!(
+                                rate = sample_rate,
+                                "ASIO setSampleRate returned {set_res}, proceeding"
+                            );
+                        }
+                    }
 
                     // Query native hardware channel format from ASIO driver
                     let mut ch_info = sys::ASIOChannelInfo {
@@ -515,7 +519,16 @@ impl AudioOutput for AsioAudioOutput {
                         &mut ch_info,
                     ) == sys::ASE_OK
                     {
-                        map_asio_sample_type(ch_info.sampleType)
+                        let mapped = map_asio_sample_type(ch_info.sampleType);
+                        if mapped == AsioHwFormat::DsdInt8LSB1 || mapped == AsioHwFormat::DsdInt8MSB1 {
+                            tracing::warn!(
+                                sample_type = ch_info.sampleType,
+                                "ASIO driver reported DSD format for PCM stream, forcing fallback to Int32LSB"
+                            );
+                            AsioHwFormat::Int32LSB
+                        } else {
+                            mapped
+                        }
                     } else {
                         AsioHwFormat::Int32LSB
                     };
@@ -558,33 +571,42 @@ impl AudioOutput for AsioAudioOutput {
                             &mut io_format as *mut _ as *mut std::ffi::c_void,
                         );
 
-                        if can_dsd == sys::ASE_SUCCESS || can_dsd == sys::ASE_OK {
-                            let set_dsd = (vtbl.future)(
+                        let set_dsd = if can_dsd == sys::ASE_SUCCESS || can_dsd == sys::ASE_OK {
+                            (vtbl.future)(
                                 asio as *mut std::ffi::c_void,
                                 sys::kAsioSetIoFormat,
                                 &mut io_format as *mut _ as *mut std::ffi::c_void,
-                            );
+                            )
+                        } else {
+                            // Drivers that don't implement canDoIoFormat might still accept setIoFormat
+                            (vtbl.future)(
+                                asio as *mut std::ffi::c_void,
+                                sys::kAsioSetIoFormat,
+                                &mut io_format as *mut _ as *mut std::ffi::c_void,
+                            )
+                        };
 
-                            if set_dsd == sys::ASE_SUCCESS || set_dsd == sys::ASE_OK {
-                                // Set DSD sample rate
-                                let dsd_hz = rate.hz() as f64;
-                                let _ = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dsd_hz);
-                                native_success = true;
+                        if set_dsd == sys::ASE_SUCCESS || set_dsd == sys::ASE_OK {
+                            // Set DSD sample rate
+                            let dsd_hz = rate.hz() as f64;
+                            let _ = (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dsd_hz);
+                            native_success = true;
 
-                                // Query channel sample type
-                                let mut ch_info = sys::ASIOChannelInfo {
-                                    channel: 0,
-                                    isInput: 0,
-                                    ..Default::default()
-                                };
-                                if (vtbl.getChannelInfo)(
-                                    asio as *mut std::ffi::c_void,
-                                    &mut ch_info,
-                                ) == sys::ASE_OK
-                                {
-                                    if ch_info.sampleType == sys::ASIOSTDSDInt8MSB1 {
-                                        chosen_hw = AsioHwFormat::DsdInt8MSB1;
-                                    }
+                            // Query channel sample type
+                            let mut ch_info = sys::ASIOChannelInfo {
+                                channel: 0,
+                                isInput: 0,
+                                ..Default::default()
+                            };
+                            if (vtbl.getChannelInfo)(
+                                asio as *mut std::ffi::c_void,
+                                &mut ch_info,
+                            ) == sys::ASE_OK
+                            {
+                                if ch_info.sampleType == sys::ASIOSTDSDInt8MSB1 {
+                                    chosen_hw = AsioHwFormat::DsdInt8MSB1;
+                                } else if ch_info.sampleType == sys::ASIOSTDSDInt8LSB1 {
+                                    chosen_hw = AsioHwFormat::DsdInt8LSB1;
                                 }
                             }
                         }
@@ -615,6 +637,16 @@ impl AudioOutput for AsioAudioOutput {
                         )));
                     } else {
                         // Fall back to DoP (DSD over PCM)
+                        let mut io_format = sys::ASIOIoFormat {
+                            FormatType: sys::kAsioFormatPCM,
+                            ..Default::default()
+                        };
+                        let _ = (vtbl.future)(
+                            asio as *mut std::ffi::c_void,
+                            sys::kAsioSetIoFormat,
+                            &mut io_format as *mut _ as *mut std::ffi::c_void,
+                        );
+
                         let dop_rate = rate.dop_pcm_rate_hz();
                         let _ =
                             (vtbl.setSampleRate)(asio as *mut std::ffi::c_void, dop_rate as f64);
@@ -713,7 +745,18 @@ impl AudioOutput for AsioAudioOutput {
                 ..Default::default()
             };
             if (vtbl.getChannelInfo)(asio as *mut std::ffi::c_void, &mut post_info) == sys::ASE_OK {
-                final_hw = map_asio_sample_type(post_info.sampleType);
+                let mapped = map_asio_sample_type(post_info.sampleType);
+                if matches!(negotiated, AudioFormat::Pcm { .. })
+                    && (mapped == AsioHwFormat::DsdInt8LSB1 || mapped == AsioHwFormat::DsdInt8MSB1)
+                {
+                    tracing::warn!(
+                        sample_type = post_info.sampleType,
+                        "Post-buffer ASIO driver returned DSD sample type for PCM playback, maintaining PCM hardware format {:?}",
+                        hw_fmt
+                    );
+                } else {
+                    final_hw = mapped;
+                }
             }
 
             tracing::info!(
@@ -873,6 +916,17 @@ impl AudioOutput for AsioAudioOutput {
                 let vtbl = &*(*asio).lpVtbl;
                 let _ = (vtbl.stop)(asio as *mut std::ffi::c_void);
                 let _ = (vtbl.disposeBuffers)(asio as *mut std::ffi::c_void);
+
+                // Reset IO format to standard PCM so device clock isn't left locked in Native DSD
+                let mut io_format = sys::ASIOIoFormat {
+                    FormatType: sys::kAsioFormatPCM,
+                    ..Default::default()
+                };
+                let _ = (vtbl.future)(
+                    asio as *mut std::ffi::c_void,
+                    sys::kAsioSetIoFormat,
+                    &mut io_format as *mut _ as *mut std::ffi::c_void,
+                );
             }
         }
         *ACTIVE_ASIO_CONTEXT.lock() = None;

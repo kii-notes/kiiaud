@@ -95,13 +95,51 @@ Cấu hình phần cứng âm thanh và cơ chế phát nhạc Bit-Perfect.
 
 | Tham số | Kiểu | Mặc định | Mô tả |
 | :--- | :--- | :--- | :--- |
-| `backend` | String | `"alsa"` (Linux)<br>`"wasapi"` (Win)<br>`"oboe"` (Android) | Backend xuất âm thanh. Các giá trị hợp lệ:<br>- `"alsa"`: Giao tiếp ALSA hardware-direct trên Linux (bypass hoàn toàn PulseAudio/PipeWire mixer).<br>- `"wasapi"`: Windows Audio Session API (chạy Exclusive Mode).<br>- `"android"` hoặc `"oboe"`: AAudio/AudioTrack direct trên Android.<br>- `"mock"` hoặc `"null"`: Dummy backend phục vụ test/CI không cần DAC. |
-| `device` | String | `"hw:CARD=Audio,DEV=0"` | Định danh thiết bị xuất phần cứng.<br>- Trên Linux ALSA: Dùng cú pháp `hw:CARD=<TênCard>,DEV=0` hoặc `hw:<IndexCard>,<IndexDev>`. Xem danh sách card qua lệnh `aplay -l`.<br>- Trên Windows: Tên chuỗi con của DAC (vd `"DAC"`) hoặc `"default"`. |
-| `bit_perfect` | Boolean | `true` | **Cực kỳ quan trọng**: Khi bật (`true`), kiiaud vô hiệu hóa hoàn toàn mọi thuật toán DSP phần mềm (không resample, không đổi bit depth, không chỉnh volume số làm tròn bit). DAC luôn được cấu hình đúng tần số lấy mẫu gốc của file âm thanh (từ 44.1kHz đến 768kHz, DSD64-DSD512). |
-| `dsd_mode` | String | `"auto"` | Cơ chế truyền tải tín hiệu DSD (Direct Stream Digital):<br>- `"auto"`: Thử Native DSD trước (`DSD_U32_BE`/`LE`). Nếu DAC phần cứng không hỗ trợ Native DSD, tự động fallback sang DoP (DSD over PCM). Không bao giờ tự ý convert DSD sang PCM.<br>- `"native"`: Bắt buộc dùng Native DSD. Nếu DAC không hỗ trợ sẽ báo lỗi.<br>- `"dop"`: Đóng gói các bit DSD vào khung PCM 24/32-bit theo chuẩn DoP v1.1. |
-| `buffer_time_ms` | Integer (u32) | `200` | Kích thước ring-buffer của phần cứng (đơn vị: mili-giây). Giúp tránh hiện tượng giật tiếng (buffer underrun) khi CPU bận. |
+| `backend` | String | `"alsa"` (Linux)<br>`"wasapi"` (Win)<br>`"oboe"` (Android) | Backend xuất âm thanh. Các giá trị hợp lệ:<br>- `"alsa"`: Giao tiếp ALSA hardware-direct trên Linux (bypass hoàn toàn PulseAudio/PipeWire mixer).<br>- `"wasapi"`: Windows Audio Session API (chạy Exclusive Mode, MMCSS Pro Audio, hỗ trợ PCM & DoP).<br>- `"asio"`: Windows ASIO driver transport (giao tiếp trực tiếp phần cứng, hỗ trợ **Native 1-bit DSD** từ DSD64 đến DSD1024 và Bit-perfect PCM).<br>- `"android"` hoặc `"oboe"`: AAudio/AudioTrack direct trên Android.<br>- `"mock"` hoặc `"null"`: Dummy backend phục vụ test/CI không cần DAC. |
+| `device` | String | `"hw:CARD=Audio,DEV=0"` | Định danh thiết bị xuất phần cứng.<br>- Trên Linux ALSA: Dùng cú pháp `hw:CARD=<TênCard>,DEV=0` hoặc `hw:<IndexCard>,<IndexDev>`. Xem danh sách card qua lệnh `aplay -l`.<br>- Trên Windows WASAPI: Tên chuỗi con của DAC (vd `"DAC"`) hoặc `"default"`.<br>- Trên Windows ASIO: Tên hoặc chuỗi con của ASIO driver (không phân biệt hoa thường, ví dụ: `"SXW UAD ASIO"`, `"Bravo-HD"`, `"Focusrite"`, `"UAD"`) hoặc `"default"` để tự động chọn driver ASIO đầu tiên tìm thấy trong Windows Registry (`HKLM\SOFTWARE\ASIO`). |
+| `bit_perfect` | Boolean | `true` | **Cực kỳ quan trọng**: Khi bật (`true`), kiiaud vô hiệu hóa hoàn toàn mọi thuật toán DSP phần mềm (không resample, không đổi bit depth, không chỉnh volume số làm tròn bit). DAC luôn được cấu hình đúng tần số lấy mẫu gốc của file âm thanh (từ 44.1kHz đến 768kHz, DSD64-DSD1024). Với backend ASIO, chế độ luôn là direct hardware stream. |
+| `dsd_mode` | String | `"auto"` | Cơ chế truyền tải tín hiệu DSD (Direct Stream Digital):<br>- `"auto"`: Tự động tối ưu. Trên Linux ALSA: Thử Native DSD trước (`DSD_U32_BE`/`LE`). Trên Windows ASIO: Thử Steinberg ASIO 2.0+ Native DSD (`kAsioSetIoFormat`, `ASIOSTDSDInt8LSB1`/`MSB1`). Nếu driver/DAC không hỗ trợ Native DSD, tự động fallback sang DoP (DSD over PCM). Tuyệt đối không convert DSD sang PCM.<br>- `"native"`: Bắt buộc dùng Native 1-bit DSD (hỗ trợ tới DSD1024 trên ASIO/ALSA). Nếu driver/DAC không hỗ trợ sẽ báo lỗi.<br>- `"dop"`: Đóng gói các bit DSD vào khung PCM 24/32-bit theo chuẩn DoP v1.1. |
+| `buffer_time_ms` | Integer (u32) | `200` | Kích thước ring-buffer của phần cứng (đơn vị: mili-giây). Giúp tránh hiện tượng giật tiếng (buffer underrun) khi CPU bận. (Trên ASIO, kích thước buffer phần cứng được cấu hình qua ASIO Driver Control Panel và tự động đồng bộ). |
 | `period_time_ms` | Integer (u32) | `40` | Chu kỳ ngắt phần cứng ALSA (đơn vị: mili-giây). |
 | `hardware_mixer` | Option\<String\> | `null` (commented) | Tên bộ điều khiển volume analog bằng phần cứng của DAC (ví dụ: `"PCM"`, `"Master"`). Nếu để trống, âm lượng phần cứng được giữ nguyên 100% để đảm bảo tín hiệu bit-perfect. |
+
+---
+
+### 2.2.1. Hướng dẫn cấu hình ASIO & Native 1-bit DSD trên Windows
+
+`kiiaud` trang bị backend ASIO độc lập (`kiiaud-output-asio`), cho phép các audiophile trên Windows chơi nhạc với chất lượng phòng thu cao nhất:
+
+#### 1. So sánh WASAPI Exclusive vs. ASIO trên Windows
+
+| Tiêu chí | WASAPI Exclusive (`backend = "wasapi"`) | ASIO Direct (`backend = "asio"`) |
+| :--- | :--- | :--- |
+| **Bypass Windows Mixer** | Có (Exclusive Mode) | Có (Giao tiếp trực tiếp driver phần cứng) |
+| **Độ trễ (Latency)** | Rất thấp (MMCSS Pro Audio) | Cực thấp (Double-buffered hardware callbacks) |
+| **Định dạng PCM** | 16-bit, 24-bit, 32-bit, Float32 (tới 768kHz) | 16-bit, 24-bit, 32-bit, Int32LSB24, Float32 (tới 768kHz) |
+| **Phát DSD** | **DoP (DSD over PCM)** (tối đa DSD256) | **Native 1-bit DSD** (DSD64, DSD128, DSD256, DSD512, DSD1024) và DoP |
+| **Cài đặt Driver** | Plug & Play (dùng driver Windows tiêu chuẩn) | Cần driver ASIO của nhà sản xuất DAC (hoặc ASIO4ALL) |
+
+#### 2. Cơ chế tự động tìm kiếm Driver ASIO (Registry Discovery)
+- `kiiaud` tự động quét các khóa Windows Registry:
+  - `HKEY_LOCAL_MACHINE\SOFTWARE\ASIO` (64-bit native drivers)
+  - `HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\ASIO` (32-bit drivers)
+- Khi `device = "default"`, kiiaud tự động nạp driver đầu tiên được tìm thấy.
+- Bạn có thể chỉ định tên chính xác hoặc một phần tên (case-insensitive), ví dụ:
+  - `device = "SXW UAD ASIO"`
+  - `device = "Bravo-HD"`
+  - `device = "Focusrite"`
+  - `device = "XMOS"`
+
+#### 3. Cấu hình mẫu cho Windows ASIO (`kiiaud.toml`):
+```toml
+[output]
+backend = "asio"
+device = "SXW UAD ASIO"   # hoặc "default"
+bit_perfect = true
+dsd_mode = "auto"         # "auto" (Native DSD với DoP fallback), hoặc "native" (chỉ Native DSD)
+buffer_time_ms = 200
+```
+
 
 ---
 
@@ -296,13 +334,14 @@ Hệ thống tham số dòng lệnh của `kiiaud` được thiết kế đầy 
 | **Daemon Options** | `--name <NAME>` | String (`"kiiaud-rpi5"`) | `[daemon].name` |
 | | `--socket-path <PATH>` | Path (`"/tmp/kiiaud.sock"`) | `[daemon].socket_path` |
 | | `-l, --log-level <LVL>` | `"trace"`, `"debug"`, `"info"`... | `[daemon].log_level` |
-| **Audio Output** | `-b, --backend <BACKEND>` | `"alsa"`, `"wasapi"`, `"mock"` | `[output].backend` |
-| | `-d, --device <DEVICE>` | `"hw:CARD=Audio,DEV=0"` | `[output].device` |
+| **Audio Output** | `-b, --backend <BACKEND>` | `"alsa"`, `"wasapi"`, `"asio"`, `"oboe"`, `"mock"` | `[output].backend` |
+| | `-d, --device <DEVICE>` | `"hw:CARD=Audio,DEV=0"` (ALSA), `"SXW UAD ASIO"` / `"default"` (ASIO) | `[output].device` |
 | | `--bit-perfect [<BOOL>]` | `true` hoặc `false` | `[output].bit_perfect` |
 | | `--dsd-mode <MODE>` | `"auto"`, `"native"`, `"dop"` | `[output].dsd_mode` |
 | | `--buffer-time-ms <MS>` | Integer (`200`) | `[output].buffer_time_ms` |
 | | `--period-time-ms <MS>` | Integer (`40`) | `[output].period_time_ms` |
 | | `--hardware-mixer <NAME>` | `"PCM"`, `"Master"`, `"none"` | `[output].hardware_mixer` |
+| | `-D, --dac-info` | Flag | *(Kiểm tra thông số DAC, tần số lấy mẫu, hỗ trợ Native DSD và quét driver ASIO)* |
 | **Security** | `--allowed-root <PATH>` | Path (có thể truyền nhiều lần) | `[security].allowed_roots` |
 | **WebUI Adapter** | `--web [<BOOL>]` | `true` hoặc `false` | `[adapter.web].enabled` |
 | | `--web-listen <IP:PORT>` | `"0.0.0.0:7110"` | `[adapter.web].listen` |
@@ -325,20 +364,29 @@ Hệ thống tham số dòng lệnh của `kiiaud` được thiết kế đầy 
 ### 3.2. Ví dụ thực tế kết hợp Dòng lệnh
 
 ```bash
-# 1. Chạy với file config có sẵn nhưng ghi đè thiết bị DAC và chế độ DSD DoP:
+# 1. Chạy với backend ASIO trên Windows (tự động nhận diện driver ASIO và Native DSD):
+kiiaud -b asio
+
+# 2. Chỉ định driver ASIO cụ thể và ép buộc chế độ Native 1-bit DSD:
+kiiaud -b asio -d "SXW UAD ASIO" --dsd-mode native
+
+# 3. Quét kiểm tra DAC và danh sách ASIO driver đăng ký trong Windows Registry:
+kiiaud -b asio --dac-info
+
+# 4. Chạy trên Linux ALSA với file config có sẵn nhưng ghi đè thiết bị DAC và chế độ DSD DoP:
 kiiaud -d "hw:1,0" --dsd-mode dop
 
-# 2. Tắt adapter WebUI và MPD trực tiếp từ dòng lệnh:
+# 5. Tắt adapter WebUI và MPD trực tiếp từ dòng lệnh:
 kiiaud --web false --mpd false
 
-# 3. Kích hoạt và kết nối nhanh tới Jellyfin Server mà không cần mở file cấu hình:
+# 6. Kích hoạt và kết nối nhanh tới Jellyfin Server mà không cần mở file cấu hình:
 kiiaud --jellyfin --jellyfin-url "http://192.168.1.10:8096" --jellyfin-api-key "secret-key-123"
 
-# 4. Kiểm tra cấu hình kết hợp các cờ ghi đè (không khởi động server):
-kiiaud --check-config -d "hw:0,0" --bit-perfect false
+# 7. Kiểm tra cấu hình kết hợp các cờ ghi đè (không khởi động server):
+kiiaud --check-config -b asio -d "SXW UAD ASIO" --bit-perfect true
 
-# 5. Xuất ra file TOML mới từ cấu hình hiện tại kết hợp ghi đè dòng lệnh:
-kiiaud --print-config -d "hw:CARD=Audio,DEV=0" --lms --lms-host "192.168.1.80" > /tmp/resolved.toml
+# 8. Xuất ra file TOML mới từ cấu hình hiện tại kết hợp ghi đè dòng lệnh:
+kiiaud --print-config -b asio -d "SXW UAD ASIO" --lms --lms-host "192.168.1.80" > /tmp/resolved.toml
 ```
 
 ---

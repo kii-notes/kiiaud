@@ -81,7 +81,7 @@ struct Args {
     #[arg(short, long, help_heading = "Audio Output Options")]
     backend: Option<String>,
 
-    /// Override audio output device (e.g. `hw:CARD=Audio,DEV=0` on Linux, or device name on Windows).
+    /// Override audio output device (e.g. `hw:CARD=Audio,DEV=0` on ALSA, ASIO driver name or `default` on Windows ASIO, or WASAPI endpoint name).
     #[arg(short, long, help_heading = "Audio Output Options")]
     device: Option<String>,
 
@@ -376,7 +376,17 @@ async fn main() -> anyhow::Result<()> {
             &config.output.device,
             config.output.bit_perfect,
         );
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "windows")]
+        let caps = if config.output.backend.eq_ignore_ascii_case("asio") {
+            use kiiaud_output::AudioOutput;
+            kiiaud_output_asio::AsioAudioOutput::new(config.output.clone()).capabilities()
+        } else if config.output.backend.eq_ignore_ascii_case("wasapi") {
+            use kiiaud_output::AudioOutput;
+            kiiaud_output_wasapi::WasapiAudioOutput::new(config.output.clone()).capabilities()
+        } else {
+            kiiaud_core::OutputCapabilities::default()
+        };
+        #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
         let caps = kiiaud_core::OutputCapabilities::default();
 
         println!("=== kiiaud DAC & Audio Hardware Inspection ===");
@@ -427,6 +437,28 @@ async fn main() -> anyhow::Result<()> {
             if caps.dsd_native { "Yes" } else { "No" },
             if caps.dsd_dop { "Yes" } else { "No" }
         );
+
+        #[cfg(target_os = "windows")]
+        if config.output.backend.eq_ignore_ascii_case("asio") {
+            let drivers = kiiaud_output_asio::scan_asio_drivers();
+            if !drivers.is_empty() {
+                println!("ASIO Registry:    Registered drivers:");
+                for (i, d) in drivers.iter().enumerate() {
+                    let is_sel = (config.output.device.eq_ignore_ascii_case("default") && i == 0)
+                        || d.name.eq_ignore_ascii_case(&config.output.device)
+                        || (!config.output.device.is_empty()
+                            && d.name
+                                .to_lowercase()
+                                .contains(&config.output.device.to_lowercase()));
+                    println!(
+                        "                  - {}{}",
+                        d.name,
+                        if is_sel { " [*]" } else { "" }
+                    );
+                }
+            }
+        }
+
         println!("===============================================");
         return Ok(());
     }
