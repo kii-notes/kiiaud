@@ -115,9 +115,7 @@ impl AlsaAudioOutput {
         allow_resample: bool,
     ) -> Result<(u64, u64)> {
         let hwp = HwParams::any(pcm).map_err(|e| {
-            KiiaudError::Output(format!(
-                "ALSA hw_params_any failed on '{device_name}': {e}"
-            ))
+            KiiaudError::Output(format!("ALSA hw_params_any failed on '{device_name}': {e}"))
         })?;
 
         if !allow_resample && self.config.bit_perfect {
@@ -126,7 +124,9 @@ impl AlsaAudioOutput {
         }
 
         hwp.set_access(Access::RWInterleaved).map_err(|e| {
-            KiiaudError::Output(format!("ALSA set_access(RWInterleaved) failed on '{device_name}': {e}"))
+            KiiaudError::Output(format!(
+                "ALSA set_access(RWInterleaved) failed on '{device_name}': {e}"
+            ))
         })?;
 
         hwp.set_format(alsa_fmt).map_err(|e| {
@@ -160,12 +160,17 @@ impl AlsaAudioOutput {
         let _ = hwp.set_period_size_near(period_frames, ValueOr::Nearest);
         let _ = hwp.set_buffer_size_near(buffer_frames);
 
-        pcm.hw_params(&hwp)
-            .map_err(|e| KiiaudError::Output(format!("ALSA snd_pcm_hw_params failed on '{device_name}': {e}")))?;
+        pcm.hw_params(&hwp).map_err(|e| {
+            KiiaudError::Output(format!(
+                "ALSA snd_pcm_hw_params failed on '{device_name}': {e}"
+            ))
+        })?;
 
-        let current_hwp = pcm
-            .hw_params_current()
-            .map_err(|e| KiiaudError::Output(format!("ALSA hw_params_current failed on '{device_name}': {e}")))?;
+        let current_hwp = pcm.hw_params_current().map_err(|e| {
+            KiiaudError::Output(format!(
+                "ALSA hw_params_current failed on '{device_name}': {e}"
+            ))
+        })?;
         let neg_buf = current_hwp.get_buffer_size().unwrap_or(0) as u64;
         let neg_per = current_hwp.get_period_size().unwrap_or(0) as u64;
 
@@ -176,8 +181,11 @@ impl AlsaAudioOutput {
             let _ = pcm.sw_params(&swp);
         }
 
-        pcm.prepare()
-            .map_err(|e| KiiaudError::Output(format!("ALSA snd_pcm_prepare failed on '{device_name}': {e}")))?;
+        pcm.prepare().map_err(|e| {
+            KiiaudError::Output(format!(
+                "ALSA snd_pcm_prepare failed on '{device_name}': {e}"
+            ))
+        })?;
 
         Ok((neg_buf, neg_per))
     }
@@ -248,9 +256,14 @@ impl AlsaAudioOutput {
         if try_native {
             let u32_rate = rate.u32_frame_rate_hz();
             for native_fmt in [AlsaFormat::DSDU32BE, AlsaFormat::DSDU32LE] {
-                if let Ok((buf_sz, per_sz)) =
-                    self.configure_pcm(pcm, &self.config.device, native_fmt, u32_rate, channels, false)
-                {
+                if let Ok((buf_sz, per_sz)) = self.configure_pcm(
+                    pcm,
+                    &self.config.device,
+                    native_fmt,
+                    u32_rate,
+                    channels,
+                    false,
+                ) {
                     self.dop_encoder = None;
                     return Ok((native_fmt, DsdTransport::Native, buf_sz, per_sz));
                 }
@@ -266,7 +279,9 @@ impl AlsaAudioOutput {
         if try_dop {
             let dop_rate = rate.dop_pcm_rate_hz();
             for dop_fmt in [AlsaFormat::S32LE, AlsaFormat::S243LE, AlsaFormat::S24LE] {
-                if let Ok((buf_sz, per_sz)) = self.configure_pcm(pcm, &self.config.device, dop_fmt, dop_rate, channels, false) {
+                if let Ok((buf_sz, per_sz)) =
+                    self.configure_pcm(pcm, &self.config.device, dop_fmt, dop_rate, channels, false)
+                {
                     let enc = DopEncoder::new(rate, channels as usize, layout, bit_order)?;
                     self.dop_encoder = Some(enc);
                     return Ok((dop_fmt, DsdTransport::DoP, buf_sz, per_sz));
@@ -338,10 +353,21 @@ impl AudioOutput for AlsaAudioOutput {
             } => {
                 // Attempt 1: Strict Bit-Perfect on the primary configured hardware device (e.g. hw:CARD=Audio,DEV=0)
                 let primary_res = PCM::new(&self.config.device, Direction::Playback, false)
-                    .map_err(|e| KiiaudError::Output(format!("Failed to open ALSA hardware device '{}': {e}", self.config.device)))
+                    .map_err(|e| {
+                        KiiaudError::Output(format!(
+                            "Failed to open ALSA hardware device '{}': {e}",
+                            self.config.device
+                        ))
+                    })
                     .and_then(|pcm| {
-                        let (alsa_fmt, hw_sf, buf_sz, per_sz) =
-                            self.negotiate_pcm_format(&pcm, &self.config.device, sample_format, sample_rate, channels, false)?;
+                        let (alsa_fmt, hw_sf, buf_sz, per_sz) = self.negotiate_pcm_format(
+                            &pcm,
+                            &self.config.device,
+                            sample_format,
+                            sample_rate,
+                            channels,
+                            false,
+                        )?;
                         Ok((pcm, alsa_fmt, hw_sf, buf_sz, per_sz))
                     });
 
@@ -361,9 +387,25 @@ impl AudioOutput for AlsaAudioOutput {
                                 sample_rate
                             );
                             let fallback_pcm = PCM::new(&fallback_dev, Direction::Playback, false)
-                                .map_err(|e| KiiaudError::Output(format!("Failed to open ALSA fallback device '{fallback_dev}': {e}")))?;
-                            let (f, sf, b, pr) = self.negotiate_pcm_format(&fallback_pcm, &fallback_dev, sample_format, sample_rate, channels, true)
-                                .map_err(|e| KiiaudError::Output(format!("Adaptive fallback on '{fallback_dev}' failed: {e}")))?;
+                                .map_err(|e| {
+                                    KiiaudError::Output(format!(
+                                        "Failed to open ALSA fallback device '{fallback_dev}': {e}"
+                                    ))
+                                })?;
+                            let (f, sf, b, pr) = self
+                                .negotiate_pcm_format(
+                                    &fallback_pcm,
+                                    &fallback_dev,
+                                    sample_format,
+                                    sample_rate,
+                                    channels,
+                                    true,
+                                )
+                                .map_err(|e| {
+                                    KiiaudError::Output(format!(
+                                        "Adaptive fallback on '{fallback_dev}' failed: {e}"
+                                    ))
+                                })?;
                             (fallback_pcm, f, sf, b, pr, true)
                         } else {
                             return Err(orig_err);
@@ -405,12 +447,13 @@ impl AudioOutput for AlsaAudioOutput {
                 layout,
                 ..
             } => {
-                let pcm = PCM::new(&self.config.device, Direction::Playback, false).map_err(|e| {
-                    KiiaudError::Output(format!(
-                        "Failed to open ALSA hardware device '{}': {e}",
-                        self.config.device
-                    ))
-                })?;
+                let pcm =
+                    PCM::new(&self.config.device, Direction::Playback, false).map_err(|e| {
+                        KiiaudError::Output(format!(
+                            "Failed to open ALSA hardware device '{}': {e}",
+                            self.config.device
+                        ))
+                    })?;
 
                 let (alsa_fmt, transport, buf_sz, per_sz) =
                     self.negotiate_dsd_format(&pcm, rate, channels, bit_order, layout)?;
@@ -688,7 +731,11 @@ pub fn parse_proc_stream0(card_id: &str) -> (Option<String>, Vec<u32>, Vec<u8>) 
         }
     }
 
-    (name, rates.into_iter().collect(), bits.into_iter().collect())
+    (
+        name,
+        rates.into_iter().collect(),
+        bits.into_iter().collect(),
+    )
 }
 
 pub fn lookup_card_name_from_cards(card_id: &str) -> Option<String> {
@@ -696,7 +743,8 @@ pub fn lookup_card_name_from_cards(card_id: &str) -> Option<String> {
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
-        if trimmed.contains(&format!("[{card_id}")) || trimmed.starts_with(&format!("{card_id} [")) {
+        if trimmed.contains(&format!("[{card_id}")) || trimmed.starts_with(&format!("{card_id} ["))
+        {
             if let Some(desc_line) = lines.next() {
                 return Some(desc_line.trim().to_owned());
             }
@@ -836,8 +884,14 @@ mod tests {
 
     #[test]
     fn test_extract_card_id() {
-        assert_eq!(extract_card_id("hw:CARD=Audio,DEV=0"), Some("Audio".to_owned()));
-        assert_eq!(extract_card_id("plughw:CARD=Audio,DEV=0"), Some("Audio".to_owned()));
+        assert_eq!(
+            extract_card_id("hw:CARD=Audio,DEV=0"),
+            Some("Audio".to_owned())
+        );
+        assert_eq!(
+            extract_card_id("plughw:CARD=Audio,DEV=0"),
+            Some("Audio".to_owned())
+        );
         assert_eq!(extract_card_id("hw:7,0"), Some("7".to_owned()));
         assert_eq!(extract_card_id("default"), None);
     }

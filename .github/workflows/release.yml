@@ -1,0 +1,295 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v0.1.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # 1. Linux x86_64
+  # ----------------------------------------------------------------------------
+  build-linux-x86_64:
+    name: Build Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            VER="${{ github.event.inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=${VER}" >> $GITHUB_ENV
+
+      - name: Install ALSA development library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build release binaries
+        run: cargo build --release --target x86_64-unknown-linux-gnu --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist/contrib
+          cp target/x86_64-unknown-linux-gnu/release/kiiaud dist/
+          cp target/x86_64-unknown-linux-gnu/release/kiiaudctl dist/
+          cp -r contrib/* dist/contrib/
+          cp kiiaud.toml README.md LICENSE-MIT LICENSE-APACHE dist/
+          ARCHIVE_NAME="kiiaud-${VERSION}-linux-x86_64.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C dist .
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: |
+            kiiaud-*-linux-x86_64.tar.gz
+            kiiaud-*-linux-x86_64.tar.gz.sha256
+
+  # ----------------------------------------------------------------------------
+  # 2. Linux ARM64 (aarch64 / Raspberry Pi)
+  # ----------------------------------------------------------------------------
+  build-linux-arm64:
+    name: Build Linux ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            VER="${{ github.event.inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=${VER}" >> $GITHUB_ENV
+
+      - name: Setup multiarch & ARM64 cross-dependencies
+        run: |
+          sudo dpkg --add-architecture arm64
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's/Architectures: .*/Architectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+            sudo tee /etc/apt/sources.list.d/arm64-ports.sources << 'EOF'
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports/
+          Suites: noble noble-updates noble-backports noble-security
+          Components: main restricted universe multiverse
+          Architectures: arm64
+          EOF
+          else
+            sudo sed -i -e 's/deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
+            sudo tee /etc/apt/sources.list.d/arm64-ports.list << 'EOF'
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse
+          EOF
+          fi
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Build ARM64 release binaries
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: cargo build --release --target aarch64-unknown-linux-gnu --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist/contrib
+          cp target/aarch64-unknown-linux-gnu/release/kiiaud dist/
+          cp target/aarch64-unknown-linux-gnu/release/kiiaudctl dist/
+          cp -r contrib/* dist/contrib/
+          cp kiiaud.toml README.md LICENSE-MIT LICENSE-APACHE dist/
+          ARCHIVE_NAME="kiiaud-${VERSION}-linux-arm64.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C dist .
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-arm64
+          path: |
+            kiiaud-*-linux-arm64.tar.gz
+            kiiaud-*-linux-arm64.tar.gz.sha256
+
+  # ----------------------------------------------------------------------------
+  # 3. Windows x86_64
+  # ----------------------------------------------------------------------------
+  build-windows-x86_64:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            VER="${{ github.event.inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=${VER}" >> $GITHUB_ENV
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows release binaries
+        run: cargo build --release --target x86_64-pc-windows-msvc --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\kiiaud.exe dist\
+          Copy-Item target\x86_64-pc-windows-msvc\release\kiiaudctl.exe dist\
+          Copy-Item kiiaud.toml dist\
+          Copy-Item README.md dist\
+          Copy-Item LICENSE-MIT dist\
+          Copy-Item LICENSE-APACHE dist\
+          $ArchiveName = "kiiaud-$($env:VERSION)-windows-x86_64.zip"
+          Compress-Archive -Path dist\* -DestinationPath $ArchiveName
+          $Hash = (Get-FileHash -Algorithm SHA256 $ArchiveName).Hash.ToLower()
+          "$Hash  $ArchiveName" | Out-File -Encoding ascii "$ArchiveName.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: |
+            kiiaud-*-windows-x86_64.zip
+            kiiaud-*-windows-x86_64.zip.sha256
+
+  # ----------------------------------------------------------------------------
+  # 4. Android ARM64 (aarch64-linux-android)
+  # ----------------------------------------------------------------------------
+  build-android-arm64:
+    name: Build Android ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            VER="${{ github.event.inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=${VER}" >> $GITHUB_ENV
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          link-to-sdk: true
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build Android release binaries
+        run: cargo ndk -t arm64-v8a build --release --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/aarch64-linux-android/release/kiiaud dist/
+          cp target/aarch64-linux-android/release/kiiaudctl dist/
+          cp kiiaud.toml README.md LICENSE-MIT LICENSE-APACHE dist/
+          ARCHIVE_NAME="kiiaud-${VERSION}-android-arm64.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C dist .
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android-arm64
+          path: |
+            kiiaud-*-android-arm64.tar.gz
+            kiiaud-*-android-arm64.tar.gz.sha256
+
+  # ----------------------------------------------------------------------------
+  # 5. Publish to GitHub Releases
+  # ----------------------------------------------------------------------------
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - build-linux-x86_64
+      - build-linux-arm64
+      - build-windows-x86_64
+      - build-android-arm64
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag_name != ''
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: packages
+          merge-multiple: true
+
+      - name: List downloaded packages
+        run: ls -la packages/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          files: |
+            packages/*.tar.gz
+            packages/*.zip
+            packages/*.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+

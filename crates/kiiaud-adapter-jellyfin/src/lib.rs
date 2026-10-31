@@ -388,7 +388,10 @@ pub async fn post_capabilities(
             tracing::warn!(status = %status, %body, "Jellyfin capabilities registration rejected");
         }
         Err(e) => {
-            tracing::warn!("capabilities registration network error: {}", e.without_url());
+            tracing::warn!(
+                "capabilities registration network error: {}",
+                e.without_url()
+            );
         }
     }
 }
@@ -452,7 +455,10 @@ pub async fn resolve_play_items(
 
         if let Some(item) = item_json {
             let item_type = item.get("Type").and_then(|v| v.as_str()).unwrap_or("");
-            let is_folder = item.get("IsFolder").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_folder = item
+                .get("IsFolder")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             // Container / Folder (e.g. MusicAlbum, Playlist, Folder)
             if is_folder
@@ -482,8 +488,7 @@ pub async fn resolve_play_items(
                                 .collect();
 
                             if !tracks.is_empty() {
-                                let selected_idx =
-                                    start_index.unwrap_or(0).min(tracks.len() - 1);
+                                let selected_idx = start_index.unwrap_or(0).min(tracks.len() - 1);
                                 return (tracks, selected_idx);
                             }
                         }
@@ -1007,11 +1012,13 @@ mod tests {
         };
 
         let repeat_msg = r#"{"MessageId":"125","MessageType":"GeneralCommand","Data":{"Name":"SetRepeatMode","Arguments":{"RepeatMode":"RepeatAll"}}}"#;
-        let action = handle_ws_text_message(repeat_msg, &client, &cfg, Some("tok123"), &handle).await;
+        let action =
+            handle_ws_text_message(repeat_msg, &client, &cfg, Some("tok123"), &handle).await;
         assert_eq!(action, WsAction::None);
 
         let shuffle_msg = r#"{"MessageId":"126","MessageType":"GeneralCommand","Data":{"Name":"SetShuffleQueue","Arguments":{"ShuffleMode":"Shuffle"}}}"#;
-        let action2 = handle_ws_text_message(shuffle_msg, &client, &cfg, Some("tok123"), &handle).await;
+        let action2 =
+            handle_ws_text_message(shuffle_msg, &client, &cfg, Some("tok123"), &handle).await;
         assert_eq!(action2, WsAction::None);
     }
 }

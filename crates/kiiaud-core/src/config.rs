@@ -189,8 +189,11 @@ impl KiiaudConfig {
     pub fn system_config_path() -> PathBuf {
         #[cfg(target_os = "windows")]
         {
-            let program_data = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_owned());
-            PathBuf::from(program_data).join("kiiaud").join("config.toml")
+            let program_data =
+                std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_owned());
+            PathBuf::from(program_data)
+                .join("kiiaud")
+                .join("config.toml")
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -213,9 +216,12 @@ impl KiiaudConfig {
                     return Some(PathBuf::from(xdg).join("kiiaud").join("config.toml"));
                 }
             }
-            std::env::var("HOME")
-                .ok()
-                .map(|home| PathBuf::from(home).join(".config").join("kiiaud").join("config.toml"))
+            std::env::var("HOME").ok().map(|home| {
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("kiiaud")
+                    .join("config.toml")
+            })
         }
     }
 
@@ -290,7 +296,10 @@ impl KiiaudConfig {
         if sys_exists || user_exists {
             let mut base_val = if sys_exists {
                 let sys_content = std::fs::read_to_string(&sys_path).map_err(|e| {
-                    KiiaudError::Config(format!("Failed to read system config '{}': {e}", sys_path.display()))
+                    KiiaudError::Config(format!(
+                        "Failed to read system config '{}': {e}",
+                        sys_path.display()
+                    ))
                 })?;
                 toml::from_str::<toml::Value>(&sys_content)
                     .map_err(|e| KiiaudError::Config(format!("Error parsing system config: {e}")))?
@@ -301,10 +310,14 @@ impl KiiaudConfig {
             let source = if let Some(ref u_path) = user_path_opt {
                 if u_path.exists() {
                     let user_content = std::fs::read_to_string(u_path).map_err(|e| {
-                        KiiaudError::Config(format!("Failed to read user config '{}': {e}", u_path.display()))
+                        KiiaudError::Config(format!(
+                            "Failed to read user config '{}': {e}",
+                            u_path.display()
+                        ))
                     })?;
-                    let user_val: toml::Value = toml::from_str(&user_content)
-                        .map_err(|e| KiiaudError::Config(format!("Error parsing user config: {e}")))?;
+                    let user_val: toml::Value = toml::from_str(&user_content).map_err(|e| {
+                        KiiaudError::Config(format!("Error parsing user config: {e}"))
+                    })?;
                     Self::merge_toml(&mut base_val, user_val);
                     ConfigSource::Merged {
                         system: if sys_exists { Some(sys_path) } else { None },
@@ -317,9 +330,9 @@ impl KiiaudConfig {
                 ConfigSource::SystemOnly(sys_path)
             };
 
-            let cfg: KiiaudConfig = base_val
-                .try_into()
-                .map_err(|e| KiiaudError::Config(format!("Failed to deserialize merged config: {e}")))?;
+            let cfg: KiiaudConfig = base_val.try_into().map_err(|e| {
+                KiiaudError::Config(format!("Failed to deserialize merged config: {e}"))
+            })?;
             return Ok((cfg, source));
         }
 

@@ -96,8 +96,16 @@ async fn main() {
             println!("Backend:          {}", capabilities.backend_name);
             println!(
                 "Bit-Perfect:      {} (Adaptive Fallback: {})",
-                if capabilities.bit_perfect { "Enabled" } else { "Disabled" },
-                if capabilities.adaptive_fallback { "Active (No Silent Errors)" } else { "Off" }
+                if capabilities.bit_perfect {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                },
+                if capabilities.adaptive_fallback {
+                    "Active (No Silent Errors)"
+                } else {
+                    "Off"
+                }
             );
 
             let native_rates: Vec<String> = capabilities
@@ -113,7 +121,10 @@ async fn main() {
                     .iter()
                     .map(|r| format!("{:.1} kHz", *r as f64 / 1000.0))
                     .collect();
-                println!("Adaptive Rates:   {} (Auto Fallback Resampled)", unsupp_rates.join(", "));
+                println!(
+                    "Adaptive Rates:   {} (Auto Fallback Resampled)",
+                    unsupp_rates.join(", ")
+                );
             }
 
             let bit_strs: Vec<String> = capabilities
@@ -122,7 +133,10 @@ async fn main() {
                 .map(|b| format!("{b}-bit"))
                 .collect();
             println!("Bit Depths:       {}", bit_strs.join(", "));
-            println!("Channels:         {} channels (Stereo)", capabilities.channels);
+            println!(
+                "Channels:         {} channels (Stereo)",
+                capabilities.channels
+            );
             println!(
                 "DSD Support:      Native DSD: {} | DoP (DSD over PCM): {}",
                 if capabilities.dsd_native { "Yes" } else { "No" },

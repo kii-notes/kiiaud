@@ -68,7 +68,12 @@ async fn connect_and_run_session(
     let start_epoch = Instant::now();
 
     // 1. Send HELO packet with hardware-informed capabilities
-    let helo_pkt = build_helo_packet(&config.mac_address, &config.player_name, max_sample_rate, dsd_supported);
+    let helo_pkt = build_helo_packet(
+        &config.mac_address,
+        &config.player_name,
+        max_sample_rate,
+        dsd_supported,
+    );
     stream
         .write_all(&helo_pkt)
         .await
@@ -156,9 +161,9 @@ pub fn resolve_hardware_capabilities(
             .unwrap_or(192_000)
     });
 
-    let dsd = config.dsd_support.unwrap_or_else(|| {
-        out_caps.is_some_and(|c| c.dsd_native || c.dsd_dop)
-    });
+    let dsd = config
+        .dsd_support
+        .unwrap_or_else(|| out_caps.is_some_and(|c| c.dsd_native || c.dsd_dop));
 
     (max_rate, dsd)
 }
@@ -340,7 +345,8 @@ async fn handle_server_packet(
                         .await
                         .map_err(|e| format!("STMc write failed: {e}"))?;
 
-                    let resp = build_resp_packet("HTTP/1.0 200 OK\r\nContent-Type: audio/x-flac\r\n\r\n");
+                    let resp =
+                        build_resp_packet("HTTP/1.0 200 OK\r\nContent-Type: audio/x-flac\r\n\r\n");
                     stream
                         .write_all(&resp)
                         .await
@@ -516,7 +522,8 @@ mod tests {
 
         // Header check: 4 bytes opcode "STAT" + 4 bytes length BE
         assert_eq!(&stat_pkt[0..4], b"STAT");
-        let body_len = u32::from_be_bytes([stat_pkt[4], stat_pkt[5], stat_pkt[6], stat_pkt[7]]) as usize;
+        let body_len =
+            u32::from_be_bytes([stat_pkt[4], stat_pkt[5], stat_pkt[6], stat_pkt[7]]) as usize;
         assert_eq!(body_len, 53);
         assert_eq!(stat_pkt.len(), 8 + 53);
 

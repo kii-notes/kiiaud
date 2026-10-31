@@ -36,7 +36,10 @@ fn parse_mac_address(s: &str) -> std::result::Result<[u8; 6], String> {
     };
 
     if parts.len() != 6 {
-        return Err(format!("MAC address must have 6 octets, found {}", parts.len()));
+        return Err(format!(
+            "MAC address must have 6 octets, found {}",
+            parts.len()
+        ));
     }
 
     let mut out = [0u8; 6];
@@ -380,8 +383,7 @@ async fn main() -> anyhow::Result<()> {
                 if args.system {
                     KiiaudConfig::system_config_path()
                 } else {
-                    KiiaudConfig::user_config_path()
-                        .unwrap_or_else(|| PathBuf::from("kiiaud.toml"))
+                    KiiaudConfig::user_config_path().unwrap_or_else(|| PathBuf::from("kiiaud.toml"))
                 }
             }
         };
@@ -389,17 +391,16 @@ async fn main() -> anyhow::Result<()> {
         KiiaudConfig::generate_default_config_file(&dest, args.force)?;
         println!("Successfully generated default configuration file at:");
         println!("  {}", dest.display());
-        println!("Edit this file to customize your DAC device, bit-perfect settings, or protocol adapters.");
+        println!(
+            "Edit this file to customize your DAC device, bit-perfect settings, or protocol adapters."
+        );
         return Ok(());
     }
 
     // Resolve configuration following hierarchy:
     // explicit --config > system-only (--system) > merged (system + user) > ./kiiaud.toml > auto-generate user config
-    let (mut config, source) = KiiaudConfig::resolve_config(
-        args.config.as_deref(),
-        args.system,
-        !args.no_auto_generate,
-    )?;
+    let (mut config, source) =
+        KiiaudConfig::resolve_config(args.config.as_deref(), args.system, !args.no_auto_generate)?;
 
     // Command-line options take ultimate precedence over any configuration files
     args.apply_to_config(&mut config);
@@ -407,7 +408,10 @@ async fn main() -> anyhow::Result<()> {
     // Handle --dac-info command
     if args.dac_info {
         #[cfg(target_os = "linux")]
-        let caps = kiiaud_output_alsa::detect_hardware_capabilities(&config.output.device, config.output.bit_perfect);
+        let caps = kiiaud_output_alsa::detect_hardware_capabilities(
+            &config.output.device,
+            config.output.bit_perfect,
+        );
         #[cfg(not(target_os = "linux"))]
         let caps = kiiaud_core::OutputCapabilities::default();
 
@@ -415,11 +419,22 @@ async fn main() -> anyhow::Result<()> {
         if !caps.device_name.is_empty() {
             println!("Device Name:      {}", caps.device_name);
         }
-        println!("Output Device:    {} (Backend: {})", config.output.device, config.output.backend);
+        println!(
+            "Output Device:    {} (Backend: {})",
+            config.output.device, config.output.backend
+        );
         println!(
             "Bit-Perfect:      {} (Adaptive Fallback: {})",
-            if caps.bit_perfect { "Enabled" } else { "Disabled" },
-            if caps.adaptive_fallback { "Active (Auto plughw for unsupported rates)" } else { "Off" }
+            if caps.bit_perfect {
+                "Enabled"
+            } else {
+                "Disabled"
+            },
+            if caps.adaptive_fallback {
+                "Active (Auto plughw for unsupported rates)"
+            } else {
+                "Off"
+            }
         );
         let native_rates: Vec<String> = caps
             .sample_rates
@@ -434,14 +449,13 @@ async fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|r| format!("{:.1} kHz", *r as f64 / 1000.0))
                 .collect();
-            println!("Adaptive Rates:   {} (SACD downscale -> Auto Fallback Resampled)", unsupp_rates.join(", "));
+            println!(
+                "Adaptive Rates:   {} (SACD downscale -> Auto Fallback Resampled)",
+                unsupp_rates.join(", ")
+            );
         }
 
-        let bit_strs: Vec<String> = caps
-            .bit_depths
-            .iter()
-            .map(|b| format!("{b}-bit"))
-            .collect();
+        let bit_strs: Vec<String> = caps.bit_depths.iter().map(|b| format!("{b}-bit")).collect();
         println!("Bit Depths:       {}", bit_strs.join(", "));
         println!("Channels:         {} channels (Stereo)", caps.channels);
         println!(
@@ -458,19 +472,38 @@ async fn main() -> anyhow::Result<()> {
         println!("Configuration status: OK");
         println!("Resolved source:    {}", source);
         println!("Daemon name:        {}", config.daemon.name);
-        println!("IPC socket:         {}", config.daemon.socket_path.display());
+        println!(
+            "IPC socket:         {}",
+            config.daemon.socket_path.display()
+        );
         println!("Output backend:     {}", config.output.backend);
         println!("Audio device:       {}", config.output.device);
         println!("Bit-perfect:        {}", config.output.bit_perfect);
         println!("DSD transport:      {:?}", config.output.dsd_mode);
         println!(
             "Adapters:           WebUI: {} ({}) | MPD: {} ({}) | Jellyfin: {} | LMS: {}",
-            if config.adapter.web.enabled { "on" } else { "off" },
+            if config.adapter.web.enabled {
+                "on"
+            } else {
+                "off"
+            },
             config.adapter.web.listen,
-            if config.adapter.mpd.enabled { "on" } else { "off" },
+            if config.adapter.mpd.enabled {
+                "on"
+            } else {
+                "off"
+            },
             config.adapter.mpd.listen,
-            if config.adapter.jellyfin.enabled { "on" } else { "off" },
-            if config.adapter.lms.enabled { "on" } else { "off" }
+            if config.adapter.jellyfin.enabled {
+                "on"
+            } else {
+                "off"
+            },
+            if config.adapter.lms.enabled {
+                "on"
+            } else {
+                "off"
+            }
         );
         return Ok(());
     }

@@ -203,25 +203,13 @@ pub enum PlaybackCommand {
     /// Enqueue multiple audio sources in a single batch.
     EnqueueBatch(Vec<(AudioSource, Option<String>, Option<String>)>),
     /// Move a track from position `from` to position `to`.
-    MovePos {
-        from: u32,
-        to: u32,
-    },
+    MovePos { from: u32, to: u32 },
     /// Move a track by its `QueueId` to position `to`.
-    MoveId {
-        id: QueueId,
-        to: u32,
-    },
+    MoveId { id: QueueId, to: u32 },
     /// Swap two tracks by their 0-based queue positions.
-    SwapPos {
-        pos1: u32,
-        pos2: u32,
-    },
+    SwapPos { pos1: u32, pos2: u32 },
     /// Swap two tracks by their unique `QueueId`s.
-    SwapId {
-        id1: QueueId,
-        id2: QueueId,
-    },
+    SwapId { id1: QueueId, id2: QueueId },
     /// Shuffle the entire queue.
     Shuffle,
     /// Clear the runtime queue and stop playback.

@@ -55,12 +55,8 @@ pub async fn run_mpd_server_with_dir(
                 let eng = engine.clone();
                 let mdir = music_dir_arc.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_mpd_client(
-                        stream,
-                        eng,
-                        mdir.as_deref().map(|p| p.as_path()),
-                    )
-                    .await
+                    if let Err(e) =
+                        handle_mpd_client(stream, eng, mdir.as_deref().map(|p| p.as_path())).await
                     {
                         tracing::debug!(%peer, "MPD client session ended: {e}");
                     }
@@ -973,7 +969,11 @@ mod tests {
 
         tokio::task::yield_now().await;
         let items = handle.queue_items();
-        assert_eq!(items.len(), 2, "Expected 2 audio tracks added from directory");
+        assert_eq!(
+            items.len(),
+            2,
+            "Expected 2 audio tracks added from directory"
+        );
 
         // 4. Test `swap 0 1`
         let res_swap = execute_mpd_line("swap 0 1", &handle, 0).await.unwrap();
@@ -982,8 +982,14 @@ mod tests {
         let swapped = handle.queue_items();
         assert_eq!(swapped[0].position, 0);
         assert_eq!(swapped[1].position, 1);
-        assert_eq!(swapped[0].source.display_uri(), track2.display().to_string());
-        assert_eq!(swapped[1].source.display_uri(), track1.display().to_string());
+        assert_eq!(
+            swapped[0].source.display_uri(),
+            track2.display().to_string()
+        );
+        assert_eq!(
+            swapped[1].source.display_uri(),
+            track1.display().to_string()
+        );
 
         // 5. Test `move 0 1`
         let res_move = execute_mpd_line("move 0 1", &handle, 0).await.unwrap();

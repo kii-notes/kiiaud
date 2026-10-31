@@ -210,7 +210,10 @@ server_url = "https://my-jellyfin.net"
     assert_eq!(merged.daemon.name, "user-kiiaud");
     assert_eq!(merged.output.device, "hw:CARD=USB,DEV=0");
     assert!(merged.adapter.jellyfin.enabled);
-    assert_eq!(merged.adapter.jellyfin.server_url, "https://my-jellyfin.net");
+    assert_eq!(
+        merged.adapter.jellyfin.server_url,
+        "https://my-jellyfin.net"
+    );
 
     // Preserved from system
     assert_eq!(merged.daemon.log_level, "warn");
@@ -224,10 +227,26 @@ server_url = "https://my-jellyfin.net"
 fn test_queue_move_swap_shuffle_batch() {
     let mut queue = Queue::new();
     let batch = vec![
-        (AudioSource::from_uri_or_path("/music/1.flac"), Some("Song 1".into()), None),
-        (AudioSource::from_uri_or_path("/music/2.flac"), Some("Song 2".into()), None),
-        (AudioSource::from_uri_or_path("/music/3.flac"), Some("Song 3".into()), None),
-        (AudioSource::from_uri_or_path("/music/4.flac"), Some("Song 4".into()), None),
+        (
+            AudioSource::from_uri_or_path("/music/1.flac"),
+            Some("Song 1".into()),
+            None,
+        ),
+        (
+            AudioSource::from_uri_or_path("/music/2.flac"),
+            Some("Song 2".into()),
+            None,
+        ),
+        (
+            AudioSource::from_uri_or_path("/music/3.flac"),
+            Some("Song 3".into()),
+            None,
+        ),
+        (
+            AudioSource::from_uri_or_path("/music/4.flac"),
+            Some("Song 4".into()),
+            None,
+        ),
     ];
     let ids = queue.enqueue_batch(batch);
     assert_eq!(ids.len(), 4);

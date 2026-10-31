@@ -361,7 +361,8 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
                 "capabilities": caps,
                 "current_format": st.format.map(|f| f.to_string()),
                 "bit_perfect": caps.bit_perfect,
-            })).unwrap_or_default();
+            }))
+            .unwrap_or_default();
             write_response(&mut write_half, "200 OK", "application/json", &json).await?;
         }
         ("GET", "/api/config") => {

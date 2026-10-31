@@ -22,19 +22,31 @@ use tokio::net::{TcpListener, TcpStream};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum IpcRequest {
-    Play { target: Option<String> },
-    Enqueue { target: String },
+    Play {
+        target: Option<String>,
+    },
+    Enqueue {
+        target: String,
+    },
     Pause,
     Resume,
     Stop,
     Next,
     Prev,
-    Seek { secs: f64 },
+    Seek {
+        secs: f64,
+    },
     Clear,
     Status,
     Queue,
-    Move { from: u32, to: u32 },
-    Swap { pos1: u32, pos2: u32 },
+    Move {
+        from: u32,
+        to: u32,
+    },
+    Swap {
+        pos1: u32,
+        pos2: u32,
+    },
     Shuffle,
     /// Query detected DAC hardware capabilities, supported rates, and bit-perfect profile.
     Dac,
@@ -43,15 +55,23 @@ pub enum IpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcResponse {
-    Ok { message: String },
-    Status { status: PlayerStatus },
-    Queue { items: Vec<PlaybackItem> },
+    Ok {
+        message: String,
+    },
+    Status {
+        status: PlayerStatus,
+    },
+    Queue {
+        items: Vec<PlaybackItem>,
+    },
     Dac {
         capabilities: kiiaud_core::OutputCapabilities,
         current_format: Option<kiiaud_core::AudioFormat>,
         active_stream: Option<String>,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// Start the local IPC server as an independent background task (`R-021`).
@@ -202,9 +222,7 @@ async fn process_ipc_request(req: IpcRequest, engine: &EngineHandle) -> IpcRespo
                     .await
             }
         }
-        IpcRequest::Move { from, to } => {
-            engine.send(PlaybackCommand::MovePos { from, to }).await
-        }
+        IpcRequest::Move { from, to } => engine.send(PlaybackCommand::MovePos { from, to }).await,
         IpcRequest::Swap { pos1, pos2 } => {
             engine.send(PlaybackCommand::SwapPos { pos1, pos2 }).await
         }
