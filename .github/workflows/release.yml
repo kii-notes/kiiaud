@@ -57,7 +57,7 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/kiiaud dist/
           cp target/x86_64-unknown-linux-gnu/release/kiiaudctl dist/
           cp -r contrib/* dist/contrib/
-          cp kiiaud.toml README.md LICENSE-MIT LICENSE-APACHE dist/
+          cp contrib/kiiaud.toml.example README.md LICENSE-MIT LICENSE-APACHE dist/
           ARCHIVE_NAME="kiiaud-${VERSION}-linux-x86_64.tar.gz"
           tar -czvf "${ARCHIVE_NAME}" -C dist .
           sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
@@ -134,7 +134,7 @@ jobs:
           cp target/aarch64-unknown-linux-gnu/release/kiiaud dist/
           cp target/aarch64-unknown-linux-gnu/release/kiiaudctl dist/
           cp -r contrib/* dist/contrib/
-          cp kiiaud.toml README.md LICENSE-MIT LICENSE-APACHE dist/
+          cp contrib/kiiaud.toml.example README.md LICENSE-MIT LICENSE-APACHE dist/
           ARCHIVE_NAME="kiiaud-${VERSION}-linux-arm64.tar.gz"
           tar -czvf "${ARCHIVE_NAME}" -C dist .
           sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
@@ -183,7 +183,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\x86_64-pc-windows-msvc\release\kiiaud.exe dist\
           Copy-Item target\x86_64-pc-windows-msvc\release\kiiaudctl.exe dist\
-          Copy-Item kiiaud.toml dist\
+          Copy-Item contrib\kiiaud.toml.example dist\
           Copy-Item README.md dist\
           Copy-Item LICENSE-MIT dist\
           Copy-Item LICENSE-APACHE dist\
@@ -245,7 +245,7 @@ jobs:
           mkdir -p dist
           cp target/aarch64-linux-android/release/kiiaud dist/
           cp target/aarch64-linux-android/release/kiiaudctl dist/
-          cp kiiaud.toml README.md LICENSE-MIT LICENSE-APACHE dist/
+          cp contrib/kiiaud.toml.example README.md LICENSE-MIT LICENSE-APACHE dist/
           ARCHIVE_NAME="kiiaud-${VERSION}-android-arm64.tar.gz"
           tar -czvf "${ARCHIVE_NAME}" -C dist .
           sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
