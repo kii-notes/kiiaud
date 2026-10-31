@@ -30,7 +30,9 @@ use std::time::Duration;
 
 #[cfg(target_os = "windows")]
 use windows::{
-    Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx},
+    Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoInitializeEx},
+    Win32::System::Console::GetConsoleWindow,
+    Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetForegroundWindow},
     core::GUID,
 };
 
@@ -295,7 +297,13 @@ impl AsioAudioOutput {
         );
 
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            // ASIO drivers require Single-Threaded Apartment (STA) COM threading for internal
+            // UI message pumps, event dispatchers, and device notifications. Attempt STA first,
+            // falling back to MTA if already initialized on this thread.
+            let coinit_res = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            if coinit_res.is_err() {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
             let clsid = parse_guid(&driver_info.clsid).map_err(|e| {
                 KiiaudError::Output(format!(
                     "Invalid CLSID GUID '{}' for ASIO driver '{}': {e}",
@@ -337,13 +345,48 @@ impl AsioAudioOutput {
 
             let asio_ptr = instance as *mut sys::IASIO;
             let vtbl = &*(*asio_ptr).lpVtbl;
-            let init_ok = (vtbl.init)(asio_ptr as *mut std::ffi::c_void, std::ptr::null_mut());
+
+            // Steinberg ASIO SDK specification: sysHandle on Windows must be a valid application HWND
+            // (e.g. active/foreground window, console window, or desktop window). Many drivers (such
+            // as Universal Audio / SXW UAD ASIO) fail IASIO::init() if passed NULL / 0.
+            let sys_handle: *mut std::ffi::c_void = {
+                let fg = GetForegroundWindow();
+                if fg.0 as usize != 0 {
+                    fg.0 as *mut std::ffi::c_void
+                } else {
+                    let con = GetConsoleWindow();
+                    if con.0 as usize != 0 {
+                        con.0 as *mut std::ffi::c_void
+                    } else {
+                        let dt = GetDesktopWindow();
+                        dt.0 as *mut std::ffi::c_void
+                    }
+                }
+            };
+
+            let mut init_ok = (vtbl.init)(asio_ptr as *mut std::ffi::c_void, sys_handle);
+            if init_ok != sys::ASIO_TRUE && !sys_handle.is_null() {
+                tracing::debug!("IASIO::init with window handle failed, retrying with NULL sysHandle");
+                init_ok = (vtbl.init)(asio_ptr as *mut std::ffi::c_void, std::ptr::null_mut());
+            }
+
             if init_ok != sys::ASIO_TRUE {
+                let mut err_buf = [0u8; 512];
+                (vtbl.getErrorMessage)(asio_ptr as *mut std::ffi::c_void, err_buf.as_mut_ptr());
+                let err_detail = String::from_utf8_lossy(&err_buf)
+                    .trim_matches(char::from(0))
+                    .trim()
+                    .to_string();
+
                 let _ = (vtbl.Release)(asio_ptr as *mut std::ffi::c_void);
-                return Err(KiiaudError::Output(format!(
-                    "ASIO driver '{}' failed IASIO::init()",
-                    driver_info.name
-                )));
+                return Err(KiiaudError::Output(if err_detail.is_empty() {
+                    format!("ASIO driver '{}' failed IASIO::init()", driver_info.name)
+                } else {
+                    format!(
+                        "ASIO driver '{}' failed IASIO::init(): {}",
+                        driver_info.name, err_detail
+                    )
+                }));
             }
 
             self.selected_driver = Some(driver_info);
