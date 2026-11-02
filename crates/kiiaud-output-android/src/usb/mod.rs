@@ -112,13 +112,28 @@ impl UsbAudioStream {
         // 1. Set interface to alt 0 (zero-bandwidth idle) before clock change
         let _ = set_interface(self.fd, self.device_info.streaming_interface, 0);
 
-        // 2. Set hardware clock frequency on DAC PLL (Bug 1 fix)
-        set_uac2_sample_rate(
-            self.fd,
-            self.device_info.control_interface,
-            self.device_info.clock_source_id,
-            sample_rate,
-        )?;
+        // 2. Set hardware sample rate
+        let frames_per_sec = match self.device_info.protocol {
+            AudioClassVersion::Uac2 => {
+                // UAC2: Configure Clock Source PLL via SET_CUR (Bug 1 fix)
+                set_uac2_sample_rate(
+                    self.fd,
+                    self.device_info.control_interface,
+                    self.device_info.clock_source_id,
+                    sample_rate,
+                )?;
+                8000.0 // USB High Speed: 125µs microframe
+            }
+            AudioClassVersion::Uac1 => {
+                // UAC1: Configure Endpoint Sampling Frequency Control via SET_CUR
+                set_uac1_sample_rate(
+                    self.fd,
+                    self.active_alt.endpoint_out,
+                    sample_rate,
+                )?;
+                1000.0 // USB Full Speed: 1ms frame
+            }
+        };
 
         // 3. Switch to active streaming alt setting
         let target_alt = if is_dsd {
@@ -141,6 +156,7 @@ impl UsbAudioStream {
             sample_rate,
             channels,
             target_alt.subslot_size as u32,
+            frames_per_sec,
         );
         pipe.prime()?;
         self.pipeline = Some(pipe);

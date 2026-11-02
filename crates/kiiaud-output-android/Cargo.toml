@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "Android (Oboe / AAudio and Pure Rust Direct USB UAC2 Bit-Perfect) audio output backend for kiiaud"
 
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [dependencies]
 kiiaud-core = { workspace = true }
 kiiaud-output = { workspace = true }

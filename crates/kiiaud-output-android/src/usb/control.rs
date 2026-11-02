@@ -1,24 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Pure Rust USB Audio Class 2.0 (UAC2) control requests and interface management.
+//! Pure Rust USB Audio Class 1.0 (UAC1) and 2.0 (UAC2) control requests and interface management.
 //!
-//! Provides functions to claim/release interfaces, configure sample rates via Clock Source PLL,
-//! and reset USB endpoints.
+//! Provides functions to claim/release interfaces, configure sample rates via Clock Source PLL (UAC2)
+//! or Endpoint Frequency Control (UAC1), and reset USB endpoints.
 
 use super::ioctl::*;
 use kiiaud_core::{KiiaudError, Result};
 use std::os::raw::c_uint;
 use std::os::unix::io::RawFd;
 
-// UAC2 Request Types
+// UAC Request Types
 pub const USB_REQ_TYPE_CLASS_INTERFACE_OUT: u8 = 0x22;
 pub const USB_REQ_TYPE_CLASS_INTERFACE_IN: u8 = 0xA2;
+pub const USB_REQ_TYPE_CLASS_ENDPOINT_OUT: u8 = 0x22;
+pub const USB_REQ_TYPE_CLASS_ENDPOINT_IN: u8 = 0xA2;
 
-// UAC2 Class-Specific Request Codes
-pub const UAC2_CS_REQ_CUR: u8 = 0x01;
-pub const UAC2_CS_REQ_RANGE: u8 = 0x02;
+// UAC Class-Specific Request Codes
+pub const UAC_CS_REQ_CUR: u8 = 0x01;
+pub const UAC_CS_REQ_RANGE: u8 = 0x02;
 
-// Clock Source Control Selectors
+// UAC1 Endpoint Control Selectors
+pub const UAC1_SAMPLING_FREQ_CONTROL: u8 = 0x01;
+
+// UAC2 Clock Source Control Selectors
 pub const UAC2_CS_SAM_FREQ_CONTROL: u8 = 0x01;
 pub const UAC2_CS_CLOCK_VALID_CONTROL: u8 = 0x02;
 
@@ -95,9 +100,9 @@ pub fn reset_device(fd: RawFd) -> Result<()> {
     Ok(())
 }
 
-/// Set DAC sample rate via UAC2 Clock Source SAM_FREQ_CONTROL (`SET_CUR`).
+/// Set DAC sample rate for UAC2 via Clock Source SAM_FREQ_CONTROL (`SET_CUR`).
 ///
-/// Fixes Bug 1 by targeting the verified `clock_source_id`.
+/// Targets the verified `clock_source_id` (Bug 1 fix).
 pub fn set_uac2_sample_rate(
     fd: RawFd,
     control_iface: u8,
@@ -108,7 +113,7 @@ pub fn set_uac2_sample_rate(
 
     let mut transfer = UsbdevfsCtrltransfer {
         bRequestType: USB_REQ_TYPE_CLASS_INTERFACE_OUT,
-        bRequest: UAC2_CS_REQ_CUR,
+        bRequest: UAC_CS_REQ_CUR,
         wValue: (UAC2_CS_SAM_FREQ_CONTROL as u16) << 8,
         wIndex: ((clock_source_id as u16) << 8) | (control_iface as u16),
         wLength: 4,
@@ -128,25 +133,31 @@ pub fn set_uac2_sample_rate(
     tracing::info!(
         sample_rate = sample_rate,
         clock_id = clock_source_id,
-        "successfully configured DAC hardware sample rate via UAC2 SET_CUR"
+        "configured UAC2 DAC sample rate via Clock Source SET_CUR"
     );
     Ok(())
 }
 
-/// Query DAC sample rate via UAC2 Clock Source SAM_FREQ_CONTROL (`GET_CUR`).
-pub fn get_uac2_sample_rate(
+/// Set DAC sample rate for UAC1 via Endpoint Sampling Frequency Control (`SET_CUR`).
+///
+/// UAC1 transmits a 3-byte sample rate directly to the Isochronous OUT endpoint.
+pub fn set_uac1_sample_rate(
     fd: RawFd,
-    control_iface: u8,
-    clock_source_id: u8,
-) -> Result<u32> {
-    let mut rate_bytes = [0u8; 4];
+    endpoint: u8,
+    sample_rate: u32,
+) -> Result<()> {
+    let mut rate_bytes = [
+        (sample_rate & 0xFF) as u8,
+        ((sample_rate >> 8) & 0xFF) as u8,
+        ((sample_rate >> 16) & 0xFF) as u8,
+    ];
 
     let mut transfer = UsbdevfsCtrltransfer {
-        bRequestType: USB_REQ_TYPE_CLASS_INTERFACE_IN,
-        bRequest: UAC2_CS_REQ_CUR,
-        wValue: (UAC2_CS_SAM_FREQ_CONTROL as u16) << 8,
-        wIndex: ((clock_source_id as u16) << 8) | (control_iface as u16),
-        wLength: 4,
+        bRequestType: USB_REQ_TYPE_CLASS_ENDPOINT_OUT,
+        bRequest: UAC_CS_REQ_CUR,
+        wValue: (UAC1_SAMPLING_FREQ_CONTROL as u16) << 8,
+        wIndex: endpoint as u16,
+        wLength: 3,
         timeout: USB_CTRL_TIMEOUT_MS,
         data: rate_bytes.as_mut_ptr() as *mut _,
     };
@@ -155,17 +166,15 @@ pub fn get_uac2_sample_rate(
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         return Err(KiiaudError::Output(format!(
-            "failed to query UAC2 sample rate on clock ID 0x{:02X}: {}",
-            clock_source_id, err
+            "failed to set UAC1 sample rate {} Hz on endpoint 0x{:02X}: {}",
+            sample_rate, endpoint, err
         )));
     }
 
-    let rate = u32::from_le_bytes(rate_bytes);
-    tracing::debug!(
-        sample_rate = rate,
-        clock_id = clock_source_id,
-        "queried active DAC sample rate via UAC2 GET_CUR"
+    tracing::info!(
+        sample_rate = sample_rate,
+        endpoint = endpoint,
+        "configured UAC1 DAC sample rate via Endpoint SET_CUR"
     );
-    Ok(rate)
+    Ok(())
 }
-

@@ -4,12 +4,15 @@
 
 Android's standard audio pipeline resamples audio to a fixed rate (typically 48 kHz or Samsung UHQA 384 kHz) and passes it through `AudioFlinger`, float software mixers, and kernel ALSA drivers (`snd-usb-audio`).
 
-`kiiaud` provides a dedicated **Pure Rust Direct USB Audio Class 2.0 (UAC2) Backend** (`AndroidUsbAudioOutput`) that completely bypasses:
+`kiiaud` provides a dedicated **Pure Rust Direct USB Audio Backend** (`AndroidUsbAudioOutput`) that completely bypasses:
 - **AudioFlinger** and Android float mixers
 - **AudioTrack**, **AAudio**, and **Oboe**
 - **Kernel ALSA `snd-usb-audio` driver**
 
-The engine writes PCM and DSD frames directly to the external USB DAC over Linux `usbdevfs` isochronous transfers.
+The engine writes PCM and DSD frames directly to the external USB DAC over Linux `usbdevfs` isochronous transfers, with full auto-detection and support for both:
+- **USB Audio Class 2.0 (UAC2)**: USB 2.0 High Speed (125µs microframes), up to 32-bit / 768 kHz, Native DSD, and DoP.
+- **USB Audio Class 1.0 (UAC1)**: USB 1.1 Full Speed (1ms frames), up to 24-bit / 96 kHz, with endpoint sampling frequency control. Compatible with vintage DACs and Android 5.0+ devices.
+
 
 ---
 
@@ -102,29 +105,32 @@ kiiaud -b android-usb -d /dev/bus/usb/001/002
 
 ---
 
-## 5. Android Kotlin Bridge Example
+## 5. Lightweight Native Android App (`android/`)
 
-```kotlin
-class UsbAudioBridge(private val context: Context) {
-    private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+The repository includes a dedicated ultra-lightweight Native Android application located in `/android`:
 
-    fun connectDac(device: UsbDevice, onFdReady: (Int) -> Unit) {
-        val connection = usbManager.openDevice(device) ?: return
+### Key Components:
+- **`KiiaudService.kt`**: Foreground Service managing high-performance WakeLock, WifiLock, and permanent notification with Bit-Perfect indicators. Listens for USB hot-plug events (`USB_DEVICE_ATTACHED` / `USB_DEVICE_DETACHED`).
+- **`MainActivity.kt`**: Single-page minimal control UI:
+  - Displays engine status (`● RUNNING`) and device local IP (`http://192.168.x.x:7110`).
+  - **USB DAC Scanner & Picker**: Scans all connected DACs, requests USB permissions, displays DAC capabilities, and switches the active DAC with one tap.
+  - Quick action buttons to open Web Dashboard or start/stop the service.
+- **`KiiaudNative.kt`**: Zero-overhead JNI bridge connecting Kotlin directly to `libkiiaud_output_android.so`.
+- **`BootReceiver.kt`**: Automatically launches `KiiaudService` upon device boot (ideal for dedicated Android TV Boxes / headless audio appliances).
 
-        // 1. Claim AudioControl & AudioStreaming interfaces
-        for (i in 0 until device.interfaceCount) {
-            val iface = device.getInterface(i)
-            connection.claimInterface(iface, true)
-        }
+### Building the Android APK:
+```bash
+# 1. Build Rust cdylib for Android targets (e.g. aarch64)
+cargo build --target aarch64-linux-android --release -p kiiaud-output-android
+mkdir -p android/app/src/main/jniLibs/arm64-v8a
+cp target/aarch64-linux-android/release/libkiiaud_output_android.so android/app/src/main/jniLibs/arm64-v8a/
 
-        // 2. Set active Alt Setting (e.g., Alt 2 or 3 for 24/32-bit PCM)
-        // This triggers kernel ISO bandwidth allocation in xHCI host controller!
-        connection.setInterface(streamingIface, bestAltSetting)
-
-        // 3. Hand fileDescriptor to kiiaud backend
-        val fd = connection.fileDescriptor
-        onFdReady(fd)
-    }
-}
+# 2. Build APK via Gradle
+cd android
+./gradlew assembleRelease
 ```
+
+> **Compatibility**: Supports all Android versions from **Android 5.0 (API 21)** up to **Android 15/16**, making it ideal for repurposing older Android TV Boxes and vintage audiophile DAPs.
+
+
 

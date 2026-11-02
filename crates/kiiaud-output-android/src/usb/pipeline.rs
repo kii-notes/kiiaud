@@ -118,6 +118,7 @@ pub struct UsbAudioPipeline {
     // Fractional microframe timing accumulator
     frame_accumulator: f64,
     calibrated_fpmf: f64,
+    frames_per_sec: f64,
 
     // Residual frame buffer for unaligned boundary bytes
     residual: [u8; 16],
@@ -132,6 +133,7 @@ impl UsbAudioPipeline {
         sample_rate: u32,
         channels: u32,
         subslot_size: u32,
+        frames_per_sec: f64,
     ) -> Self {
         let bytes_per_frame = (channels * subslot_size) as usize;
         let mut slots = Vec::with_capacity(USB_AUDIO_NUM_URBS);
@@ -147,7 +149,7 @@ impl UsbAudioPipeline {
             fb
         });
 
-        let nominal_fpmf = sample_rate as f64 / 8000.0;
+        let nominal_fpmf = sample_rate as f64 / frames_per_sec;
 
         Self {
             fd,
@@ -165,6 +167,7 @@ impl UsbAudioPipeline {
             feedback_count: 0,
             frame_accumulator: 0.0,
             calibrated_fpmf: nominal_fpmf,
+            frames_per_sec,
             residual: [0u8; 16],
             residual_len: 0,
         }
@@ -367,7 +370,7 @@ impl UsbAudioPipeline {
                 let raw = (b[0] as u32) | ((b[1] as u32) << 8) | ((b[2] as u32) << 16) | ((b[3] as u32) << 24);
                 let new_fpmf = raw as f64 / 65536.0;
 
-                let nominal = self.sample_rate as f64 / 8000.0;
+                let nominal = self.sample_rate as f64 / self.frames_per_sec;
                 // Sanity check: must be within ±1.5% of nominal sample rate
                 if new_fpmf > nominal * 0.985 && new_fpmf < nominal * 1.015 {
                     self.calibrated_fpmf = new_fpmf;
@@ -375,7 +378,7 @@ impl UsbAudioPipeline {
                         tracing::debug!(
                             count = self.feedback_count,
                             calibrated_fpmf = new_fpmf,
-                            actual_dac_hz = new_fpmf * 8000.0,
+                            actual_dac_hz = new_fpmf * self.frames_per_sec,
                             "continuous DAC async feedback calibration"
                         );
                     }
@@ -404,6 +407,6 @@ impl UsbAudioPipeline {
     }
 
     pub fn calibrated_rate_hz(&self) -> f64 {
-        self.calibrated_fpmf * 8000.0
+        self.calibrated_fpmf * self.frames_per_sec
     }
 }

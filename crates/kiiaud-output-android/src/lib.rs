@@ -10,9 +10,11 @@
 //! 2. **Oboe / AAudio Fallback**:
 //!    For device built-in speakers, headphone jacks, or Bluetooth audio.
 
+pub mod jni;
 pub mod usb;
 pub mod usb_output;
 
+pub use jni::*;
 pub use usb_output::AndroidUsbAudioOutput;
 
 use kiiaud_core::config::OutputConfig;
@@ -130,6 +132,22 @@ unsafe impl Send for AndroidAudioOutput {}
 
 impl AudioOutput for AndroidAudioOutput {
     fn open(&mut self, format: &AudioFormat) -> Result<AudioFormat> {
+        let is_auto_or_usb = self.config.backend.eq_ignore_ascii_case("android")
+            || self.config.backend.eq_ignore_ascii_case("auto")
+            || self.config.backend.eq_ignore_ascii_case("android-usb")
+            || self.config.backend.eq_ignore_ascii_case("usb");
+
+        // If a dynamic USB DAC was attached via Android UsbManager, activate direct USB backend
+        if is_auto_or_usb {
+            if let Some(active_fd) = get_active_usb_fd() {
+                if self.usb_backend.is_none() {
+                    let mut usb_cfg = self.config.clone();
+                    usb_cfg.device = format!("fd:{}", active_fd);
+                    self.usb_backend = Some(AndroidUsbAudioOutput::new(usb_cfg));
+                }
+            }
+        }
+
         if let Some(usb) = self.usb_backend.as_mut() {
             let negotiated = usb.open(format)?;
             self.active_format = Some(negotiated);
@@ -294,6 +312,19 @@ impl AudioOutput for AndroidAudioOutput {
     fn capabilities(&self) -> OutputCapabilities {
         if let Some(usb) = self.usb_backend.as_ref() {
             return usb.capabilities();
+        }
+
+        let is_auto_or_usb = self.config.backend.eq_ignore_ascii_case("android")
+            || self.config.backend.eq_ignore_ascii_case("auto")
+            || self.config.backend.eq_ignore_ascii_case("android-usb")
+            || self.config.backend.eq_ignore_ascii_case("usb");
+
+        if is_auto_or_usb {
+            if let Some(active_fd) = get_active_usb_fd() {
+                let mut usb_cfg = self.config.clone();
+                usb_cfg.device = format!("fd:{}", active_fd);
+                return AndroidUsbAudioOutput::new(usb_cfg).capabilities();
+            }
         }
 
         OutputCapabilities {
@@ -508,5 +539,33 @@ mod tests {
         let frames = out.write(&buf).unwrap();
         assert_eq!(frames, 1);
         out.stop().unwrap();
+    }
+
+    #[test]
+    fn test_dynamic_usb_fd_registry_and_auto_detection() {
+        clear_active_usb_fd();
+        assert_eq!(get_active_usb_fd(), None);
+
+        // Before setting USB fd, default backend is Oboe
+        let cfg = OutputConfig {
+            backend: "android".to_owned(),
+            bit_perfect: false,
+            ..OutputConfig::default()
+        };
+        let out = AndroidAudioOutput::new(cfg);
+        let caps1 = out.capabilities();
+        assert_eq!(caps1.bit_perfect, false);
+
+        // Set active USB fd dynamically (simulating Android UsbManager attach event)
+        set_active_usb_fd(42);
+        assert_eq!(get_active_usb_fd(), Some(42));
+
+        let caps2 = out.capabilities();
+        assert!(caps2.backend_name.contains("Direct USB Audio"));
+        assert!(caps2.bit_perfect);
+
+        // Clear dynamic USB fd (simulating unplug event)
+        clear_active_usb_fd();
+        assert_eq!(get_active_usb_fd(), None);
     }
 }

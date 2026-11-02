@@ -159,15 +159,24 @@ impl AudioOutput for AndroidUsbAudioOutput {
                 bit_depths = vec![16, 24, 32];
             }
 
+            let protocol_str = match info.protocol {
+                crate::usb::descriptor::AudioClassVersion::Uac1 => "UAC1",
+                crate::usb::descriptor::AudioClassVersion::Uac2 => "UAC2",
+            };
+
+            let device_label = match info.protocol {
+                crate::usb::descriptor::AudioClassVersion::Uac1 => {
+                    format!("USB Audio DAC (UAC1 Endpoint 0x{:02X})", info.best_pcm_alt.as_ref().map(|a| a.endpoint_out).unwrap_or(1))
+                }
+                crate::usb::descriptor::AudioClassVersion::Uac2 => {
+                    format!("USB Audio DAC (UAC2 Clock ID 0x{:02X}, Iface {})", info.clock_source_id, info.streaming_interface)
+                }
+            };
+
             OutputCapabilities {
-                backend_name: "Android Direct USB Audio (Pure Rust UAC2 Bit-Perfect)".to_owned(),
-                device_name: format!(
-                    "USB Audio DAC (Clock ID: 0x{:02X}, Iface: {})",
-                    info.clock_source_id, info.streaming_interface
-                ),
-                sample_rates: vec![
-                    44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000,
-                ],
+                backend_name: format!("Android Direct USB Audio (Pure Rust {} Bit-Perfect)", protocol_str),
+                device_name: device_label,
+                sample_rates: info.supported_sample_rates.clone(),
                 unsupported_rates: Vec::new(),
                 bit_depths,
                 channels: 2,
@@ -175,7 +184,7 @@ impl AudioOutput for AndroidUsbAudioOutput {
                 bit_perfect: true,
                 adaptive_fallback: false,
                 dsd_native: info.dsd_native_alt.is_some(),
-                dsd_dop: true,
+                dsd_dop: info.protocol == crate::usb::descriptor::AudioClassVersion::Uac2,
             }
         } else {
             self.mock_caps.clone()
