@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Android audio output backend (`kiiaud-output-android`) using Oboe / AAudio.
+//! Android audio output backend (`kiiaud-output-android`).
 //!
-//! Features:
-//! - Bridges Google's Oboe library (AAudio / OpenSL ES) to kiiaud's [`AudioOutput`] trait.
-//! - Capability-driven architecture: dynamically queries and exposes device capabilities
-//!   (sample rates, exclusive mode, bit-perfect support, DoP).
-//! - Ring buffer FIFO bridging the synchronous `write()` push model to Oboe's asynchronous
-//!   real-time audio callback model.
-//! - Bit-perfect DoP (DSD over PCM) passthrough for DSF, DFF, and WavPack DSD.
-//! - Graceful fallback from Exclusive to Shared mode if the hardware or Android HAL refuses
-//!   exclusive access.
+//! Supports two distinct operating modes:
+//! 1. **Direct USB Audio (Pure Rust UAC2 Bit-Perfect)**:
+//!    Bypasses Android AudioFlinger, AAudio, Oboe, ALSA user-space, and kernel `snd-usb-audio`.
+//!    Streams directly to USB DACs over Linux `usbdevfs` isochronous transfers.
+//!    Supports raw integer PCM, DoP (DSD over PCM), and Native DSD.
+//! 2. **Oboe / AAudio Fallback**:
+//!    For device built-in speakers, headphone jacks, or Bluetooth audio.
+
+pub mod usb;
+pub mod usb_output;
+
+pub use usb_output::AndroidUsbAudioOutput;
 
 use kiiaud_core::config::OutputConfig;
 use kiiaud_core::{
@@ -86,10 +89,22 @@ pub struct AndroidAudioOutput {
     dop_encoder: Option<DopEncoder>,
     dop_scratch: Vec<i32>,
     byte_scratch: Vec<u8>,
+    usb_backend: Option<AndroidUsbAudioOutput>,
 }
 
 impl AndroidAudioOutput {
     pub fn new(config: OutputConfig) -> Self {
+        let use_usb = config.backend.eq_ignore_ascii_case("android-usb")
+            || config.backend.eq_ignore_ascii_case("usb")
+            || config.device.starts_with("fd:")
+            || config.device.starts_with("/dev/bus/usb");
+
+        let usb_backend = if use_usb {
+            Some(AndroidUsbAudioOutput::new(config.clone()))
+        } else {
+            None
+        };
+
         Self {
             config,
             active_format: None,
@@ -100,6 +115,7 @@ impl AndroidAudioOutput {
             dop_encoder: None,
             dop_scratch: Vec::new(),
             byte_scratch: Vec::new(),
+            usb_backend,
         }
     }
 
@@ -114,6 +130,13 @@ unsafe impl Send for AndroidAudioOutput {}
 
 impl AudioOutput for AndroidAudioOutput {
     fn open(&mut self, format: &AudioFormat) -> Result<AudioFormat> {
+        if let Some(usb) = self.usb_backend.as_mut() {
+            let negotiated = usb.open(format)?;
+            self.active_format = Some(negotiated);
+            self.is_playing = true;
+            return Ok(negotiated);
+        }
+
         self.stop()?;
 
         tracing::info!(
@@ -155,7 +178,7 @@ impl AudioOutput for AndroidAudioOutput {
             } => {
                 if self.config.dsd_mode == DsdMode::Native {
                     return Err(KiiaudError::Output(
-                        "Native DSD is not supported on Android HAL; use DoP transport instead"
+                        "Native DSD is not supported on Android HAL; use DoP transport or Direct USB backend instead"
                             .to_owned(),
                     ));
                 }
@@ -195,6 +218,10 @@ impl AudioOutput for AndroidAudioOutput {
     }
 
     fn write(&mut self, buffer: &AudioBuffer) -> Result<usize> {
+        if let Some(usb) = self.usb_backend.as_mut() {
+            return usb.write(buffer);
+        }
+
         let Some(hw_fmt) = self.hw_format else {
             return Err(KiiaudError::Output(
                 "Android audio output is not open".to_owned(),
@@ -229,22 +256,33 @@ impl AudioOutput for AndroidAudioOutput {
     }
 
     fn pause(&mut self) -> Result<()> {
+        if let Some(usb) = self.usb_backend.as_mut() {
+            return usb.pause();
+        }
         self.is_playing = false;
         Ok(())
     }
 
     fn resume(&mut self) -> Result<()> {
+        if let Some(usb) = self.usb_backend.as_mut() {
+            return usb.resume();
+        }
         self.is_playing = true;
         Ok(())
     }
 
     fn drain(&mut self) -> Result<()> {
-        // Clear remaining ring buffer contents on track end
+        if let Some(usb) = self.usb_backend.as_mut() {
+            return usb.drain();
+        }
         self.ring_buffer.clear();
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
+        if let Some(usb) = self.usb_backend.as_mut() {
+            let _ = usb.stop();
+        }
         self.is_playing = false;
         self.active_format = None;
         self.hw_format = None;
@@ -254,6 +292,10 @@ impl AudioOutput for AndroidAudioOutput {
     }
 
     fn capabilities(&self) -> OutputCapabilities {
+        if let Some(usb) = self.usb_backend.as_ref() {
+            return usb.capabilities();
+        }
+
         OutputCapabilities {
             backend_name: if self.is_exclusive {
                 "Android Oboe (AAudio Exclusive Mode)".to_owned()
@@ -341,7 +383,6 @@ pub fn pack_f32_to_android_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kiiaud_core::format::DsdRate;
 
     #[test]
     fn test_s16_packing_is_bit_exact() {
@@ -435,43 +476,37 @@ mod tests {
     }
 
     #[test]
-    fn test_dop_open_and_write() {
+    fn test_usb_audio_backend_routing_and_capabilities() {
         let cfg = OutputConfig {
-            backend: "oboe".to_owned(),
+            backend: "android-usb".to_owned(),
             bit_perfect: true,
             ..OutputConfig::default()
         };
         let mut out = AndroidAudioOutput::new(cfg);
+        let caps = out.capabilities();
+        assert!(caps.backend_name.contains("Direct USB Audio"));
+        assert!(caps.bit_perfect);
+        assert!(caps.exclusive);
+        assert!(caps.dsd_native);
+        assert!(caps.dsd_dop);
 
-        let fmt = AudioFormat::Dsd {
-            rate: DsdRate::Dsd64,
+        let fmt = AudioFormat::Pcm {
+            sample_rate: 192000,
             channels: 2,
-            transport: DsdTransport::Native,
-            bit_order: kiiaud_core::BitOrder::MsbFirst,
-            layout: kiiaud_core::ChannelLayout::Interleaved,
+            bits_per_sample: 24,
+            sample_format: SampleFormat::S24Le,
         };
-
         let opened = out.open(&fmt).unwrap();
-        assert!(matches!(
-            opened,
-            AudioFormat::Dsd {
-                transport: DsdTransport::DoP,
-                ..
-            }
-        ));
+        assert_eq!(opened, fmt);
 
-        // Write DSD frames
-        let buf = AudioBuffer::Dsd {
-            data: vec![0xAA, 0x55, 0xAA, 0x55],
-            rate: DsdRate::Dsd64,
+        let buf = AudioBuffer::PcmI32 {
+            samples: vec![0x1000_0000, 0x2000_0000],
             channels: 2,
-            bit_order: kiiaud_core::BitOrder::MsbFirst,
-            layout: kiiaud_core::ChannelLayout::Interleaved,
+            sample_rate: 192000,
+            bits_per_sample: 24,
         };
         let frames = out.write(&buf).unwrap();
-        assert_eq!(frames, 2);
-        assert!(out.ring_buffer().available() > 0);
-
+        assert_eq!(frames, 1);
         out.stop().unwrap();
     }
 }

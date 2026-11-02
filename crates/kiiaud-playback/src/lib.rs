@@ -128,6 +128,8 @@ impl PlaybackEngine {
             Box::new(AsioAudioOutput::new(config.output.clone()))
         } else if config.output.backend.eq_ignore_ascii_case("android")
             || config.output.backend.eq_ignore_ascii_case("oboe")
+            || config.output.backend.eq_ignore_ascii_case("android-usb")
+            || config.output.backend.eq_ignore_ascii_case("usb")
         {
             Box::new(AndroidAudioOutput::new(config.output.clone()))
         } else if config.output.backend.eq_ignore_ascii_case("alsa") {

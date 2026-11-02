@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Android (Oboe / AAudio) audio output backend for kiiaud"
+description = "Android (Oboe / AAudio and Pure Rust Direct USB UAC2 Bit-Perfect) audio output backend for kiiaud"
 
 [dependencies]
 kiiaud-core = { workspace = true }
@@ -12,6 +12,7 @@ kiiaud-output = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+libc = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 oboe = { version = "0.6", optional = true }

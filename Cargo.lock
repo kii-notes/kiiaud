@@ -1017,6 +1017,7 @@ version = "0.1.0"
 dependencies = [
  "kiiaud-core",
  "kiiaud-output",
+ "libc",
  "oboe",
  "parking_lot",
  "thiserror",

@@ -29,6 +29,7 @@ log_level = "info"
 #   - "alsa": Linux direct ALSA hardware transport (recommended for bit-perfect Hi-Fi)
 #   - "wasapi": Windows Exclusive WASAPI transport
 #   - "asio": Windows ASIO driver transport with Native 1-bit DSD support
+#   - "android-usb" / "usb": Android Direct USB UAC2 Bit-Perfect backend (bypasses AudioFlinger & ALSA)
 #   - "android" / "oboe": Android direct AudioTrack / AAudio
 #   - "mock" / "null": Headless dummy output for testing and CI
 backend = "alsa"
