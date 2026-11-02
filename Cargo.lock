@@ -887,9 +887,11 @@ dependencies = [
  "kiiaud-output-asio",
  "kiiaud-output-wasapi",
  "kiiaud-playback",
+ "libc",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows",
 ]
 
 [[package]]

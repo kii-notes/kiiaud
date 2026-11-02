@@ -16,6 +16,13 @@ use kiiaud_playback::PlaybackEngine;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
+mod service;
+mod single_instance;
+mod tray;
+
+use service::ServiceAction;
+use single_instance::SingleInstanceGuard;
+
 #[derive(Parser)]
 #[command(
     name = "kiiaud",
@@ -73,6 +80,51 @@ struct Args {
     /// Override log verbosity level (`trace`, `debug`, `info`, `warn`, `error`).
     #[arg(short = 'l', long, help_heading = "Daemon Options")]
     log_level: Option<String>,
+
+    /// Allow multiple instances of kiiaud to run concurrently (bypasses single-instance lock).
+    #[arg(long, help_heading = "Daemon Options")]
+    allow_multiple_instances: bool,
+
+    /// Run kiiaud in background mode (on Windows: automatically hides terminal console).
+    #[arg(long, help_heading = "Daemon Options")]
+    background: bool,
+
+    /// Show system tray icon in notification area (Windows only, enabled by default in background mode).
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        help_heading = "Daemon Options"
+    )]
+    tray: Option<bool>,
+
+    // -------------------------------------------------------------------------
+    // Service Management
+    // -------------------------------------------------------------------------
+    /// Manage kiiaud background service/task (`install`, `uninstall`, `start`, `stop`, `status`).
+    #[arg(long, value_name = "ACTION", help_heading = "Service Management")]
+    service: Option<ServiceAction>,
+
+    /// Install kiiaud as an auto-starting background service/task and exit.
+    #[arg(long, help_heading = "Service Management")]
+    service_install: bool,
+
+    /// Uninstall kiiaud background service/task and exit.
+    #[arg(long, help_heading = "Service Management")]
+    service_uninstall: bool,
+
+    /// Check status of kiiaud background service/task and exit.
+    #[arg(long, help_heading = "Service Management")]
+    service_status: bool,
+
+    /// Start kiiaud background service/task and exit.
+    #[arg(long, help_heading = "Service Management")]
+    service_start: bool,
+
+    /// Stop running kiiaud background service/task and exit.
+    #[arg(long, help_heading = "Service Management")]
+    service_stop: bool,
 
     // -------------------------------------------------------------------------
     // Audio Output & Bit-Perfect Options (Overrides [output])
@@ -378,6 +430,33 @@ impl Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Handle background service management actions (--service, --service-install, etc.)
+    let service_action = args.service.or_else(|| {
+        if args.service_install {
+            Some(ServiceAction::Install)
+        } else if args.service_uninstall {
+            Some(ServiceAction::Uninstall)
+        } else if args.service_status {
+            Some(ServiceAction::Status)
+        } else if args.service_start {
+            Some(ServiceAction::Start)
+        } else if args.service_stop {
+            Some(ServiceAction::Stop)
+        } else {
+            None
+        }
+    });
+
+    if let Some(action) = service_action {
+        service::handle_service_command(action)?;
+        return Ok(());
+    }
+
+    // Hide console window immediately if running in background mode (Windows)
+    if args.background {
+        tray::hide_console_window();
+    }
+
     // Handle --generate-config command
     if let Some(target_opt) = args.generate_config {
         let dest = match target_opt {
@@ -549,6 +628,13 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Enforce single instance guard unless explicitly bypassed
+    let _single_instance_guard = if !args.allow_multiple_instances {
+        Some(SingleInstanceGuard::acquire(&config.daemon.name)?)
+    } else {
+        None
+    };
+
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&config.daemon.log_level));
     tracing_subscriber::fmt().with_env_filter(filter).init();
@@ -616,6 +702,9 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Create shutdown channel (used by System Tray or other adapters)
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+
     // Spawn Embedded Hi-Fi WebUI & REST/SSE server if enabled
     if config.adapter.web.enabled {
         let listen = config.adapter.web.listen.clone();
@@ -627,6 +716,31 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!("WebUI adapter error: {e}");
             }
         });
+    }
+
+    // Initialize System Tray if enabled (Windows only; default true in background mode or on Windows)
+    let enable_tray = args.tray.unwrap_or(args.background || cfg!(target_os = "windows"));
+    if enable_tray {
+        let web_url = if config.adapter.web.enabled {
+            let listen = &config.adapter.web.listen;
+            let host = if listen.starts_with("0.0.0.0") || listen.starts_with(":") {
+                let port = listen.rsplit(':').next().unwrap_or("7110");
+                format!("http://127.0.0.1:{port}")
+            } else {
+                format!("http://{listen}")
+            };
+            Some(host)
+        } else {
+            None
+        };
+
+        tray::spawn_tray(
+            config.daemon.name.clone(),
+            web_url,
+            config.output.device.clone(),
+            config.output.backend.clone(),
+            shutdown_tx,
+        );
     }
 
     // If `--play <path_or_url>` was passed on CLI, start playing immediately
@@ -642,9 +756,15 @@ async fn main() -> anyhow::Result<()> {
             .await;
     }
 
-    // Wait for SIGINT / Ctrl+C
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("received shutdown signal; stopping playback cleanly");
+    // Wait for SIGINT / Ctrl+C or System Tray Exit signal
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("received shutdown signal (Ctrl+C); stopping playback cleanly");
+        }
+        _ = shutdown_rx.recv() => {
+            tracing::info!("received shutdown signal from system tray; stopping playback cleanly");
+        }
+    }
     let _ = handle.send(PlaybackCommand::Stop).await;
 
     Ok(())

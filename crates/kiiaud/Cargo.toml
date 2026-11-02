@@ -27,11 +27,21 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 kiiaud-output-alsa.workspace = true
 
-[target.'cfg(target_os = "windows")'.dependencies]
-kiiaud-output.workspace = true
-kiiaud-output-asio.workspace = true
-kiiaud-output-wasapi.workspace = true
-
+[target.'cfg(windows)'.dependencies]
+kiiaud-output = { workspace = true }
+kiiaud-output-asio = { workspace = true }
+kiiaud-output-wasapi = { workspace = true }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+] }
