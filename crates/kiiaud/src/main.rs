@@ -225,6 +225,26 @@ struct Args {
     /// Override LMS virtual MAC address (e.g. `02:4B:49:49:41:55`).
     #[arg(long, value_parser = parse_mac_address, help_heading = "LMS Adapter Options")]
     lms_mac: Option<[u8; 6]>,
+
+    /// Connect to LMS via a Lyrion Anywhere Gateway (`https://...` or `http://...`).
+    #[arg(long, help_heading = "LMS Adapter Options")]
+    lms_gateway: Option<String>,
+
+    /// Lyrion Anywhere Gateway username.
+    #[arg(long, help_heading = "LMS Adapter Options")]
+    lms_user: Option<String>,
+
+    /// Lyrion Anywhere Gateway password.
+    #[arg(long, help_heading = "LMS Adapter Options")]
+    lms_password: Option<String>,
+
+    /// Lyrion Anywhere Gateway one-time pairing code or `lyrion-anywhere://pair?...` link.
+    #[arg(long, help_heading = "LMS Adapter Options")]
+    lms_pair_code: Option<String>,
+
+    /// Lyrion Anywhere Gateway streaming quality (`original`, `high`, or `low`).
+    #[arg(long, help_heading = "LMS Adapter Options")]
+    lms_quality: Option<String>,
 }
 
 impl Args {
@@ -331,6 +351,25 @@ impl Args {
         }
         if let Some(mac) = self.lms_mac {
             config.adapter.lms.mac_address = mac;
+        }
+        if let Some(ref gw) = self.lms_gateway {
+            config.adapter.lms.enabled = true;
+            config.adapter.lms.use_gateway = true;
+            config.adapter.lms.gateway_url = Some(gw.clone());
+        }
+        if let Some(ref u) = self.lms_user {
+            config.adapter.lms.gateway_username = Some(u.clone());
+        }
+        if let Some(ref p) = self.lms_password {
+            config.adapter.lms.gateway_password = Some(p.clone());
+        }
+        if let Some(ref code) = self.lms_pair_code {
+            config.adapter.lms.enabled = true;
+            config.adapter.lms.use_gateway = true;
+            config.adapter.lms.gateway_pairing_code = Some(code.clone());
+        }
+        if let Some(ref q) = self.lms_quality {
+            config.adapter.lms.gateway_quality = q.clone();
         }
     }
 }
@@ -566,8 +605,8 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn LMS / Lyrion SlimProto adapter if enabled
-    if config.adapter.lms.enabled {
+    // Spawn LMS / Lyrion SlimProto adapter supervisor (always spawned so it can be enabled/hot-reloaded from WebUI at runtime)
+    {
         let lms_cfg = config.adapter.lms.clone();
         let h = handle.clone();
         tokio::spawn(async move {

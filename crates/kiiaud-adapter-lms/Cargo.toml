@@ -10,8 +10,15 @@ workspace = true
 
 [dependencies]
 kiiaud-core.workspace = true
+kiiaud-decoder.workspace = true
 kiiaud-playback.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

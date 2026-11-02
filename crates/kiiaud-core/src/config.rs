@@ -111,6 +111,16 @@ server_port = 3483
 http_port = 9000
 player_name = "kiiaud Squeezebox"
 
+# Remote access via Lyrion Anywhere Gateway (HTTPS / WSS tunnel):
+# Set `use_gateway = true` and `gateway_url` to connect remotely through a Lyrion Anywhere Gateway
+# instead of direct LAN TCP 3483.
+use_gateway = false
+gateway_url = ""
+gateway_quality = "original" # "original" (bit-perfect passthrough), "high" (Opus 160k), or "low" (Opus 96k)
+# gateway_username = ""
+# gateway_refresh_token = ""
+# gateway_device_name = ""
+
 # MAC address for LMS device tracking and persistence (6 bytes).
 # LMS tracks each player by this unique MAC address (playlists, volume, settings).
 # Supports multiple formats:
@@ -619,6 +629,22 @@ pub struct LmsAdapterConfig {
     /// If None, auto-detected from output capabilities (true if DAC supports DSD, false otherwise).
     /// When false, LMS automatically transcodes DSD to PCM at <= max_sample_rate.
     pub dsd_support: Option<bool>,
+    /// Whether to connect remotely via a Lyrion Anywhere Gateway (`AnywhereWs`) instead of LAN `DirectTcp`.
+    pub use_gateway: bool,
+    /// Base URL of the Lyrion Anywhere Gateway (e.g. `"https://music.example.com"` or `"http://10.8.0.1:9443"`).
+    pub gateway_url: Option<String>,
+    /// Optional username for Lyrion Anywhere Gateway login.
+    pub gateway_username: Option<String>,
+    /// Optional password for initial Lyrion Anywhere Gateway login (exchanged for `gateway_refresh_token`).
+    pub gateway_password: Option<String>,
+    /// Optional one-time pairing code or `lyrion-anywhere://pair?...` link.
+    pub gateway_pairing_code: Option<String>,
+    /// Persistent Lyrion Anywhere refresh token (rotated automatically on refresh).
+    pub gateway_refresh_token: Option<String>,
+    /// Assigned device name on the Lyrion Anywhere Gateway.
+    pub gateway_device_name: Option<String>,
+    /// Streaming quality requested from the Lyrion Anywhere Gateway: `"original"` (default, bit-perfect passthrough), `"high"` (Opus 160k), or `"low"` (Opus 96k).
+    pub gateway_quality: String,
 }
 
 /// Parses a MAC address from various string representations.
@@ -724,6 +750,14 @@ impl Default for LmsAdapterConfig {
             mac_address: [0x02, 0x4b, 0x49, 0x49, 0x41, 0x55], // locally administered "KIIAU"
             max_sample_rate: None,
             dsd_support: None,
+            use_gateway: false,
+            gateway_url: None,
+            gateway_username: None,
+            gateway_password: None,
+            gateway_pairing_code: None,
+            gateway_refresh_token: None,
+            gateway_device_name: None,
+            gateway_quality: "original".to_owned(),
         }
     }
 }

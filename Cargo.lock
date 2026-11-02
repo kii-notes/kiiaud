@@ -928,10 +928,17 @@ name = "kiiaud-adapter-lms"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "futures-util",
  "kiiaud-core",
+ "kiiaud-decoder",
  "kiiaud-playback",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 
@@ -952,6 +959,7 @@ dependencies = [
 name = "kiiaud-adapter-web"
 version = "0.1.0"
 dependencies = [
+ "kiiaud-adapter-lms",
  "kiiaud-core",
  "kiiaud-playback",
  "parking_lot",

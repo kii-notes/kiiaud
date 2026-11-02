@@ -7,8 +7,64 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use symphonia::core::io::MediaSource;
+
+/// Internal header key injected by `kiiaud-adapter-lms` when streaming via Lyrion Anywhere Gateway.
+/// Carries `<session_id>:<stream_seq>` so `open_http_stream` can emit periodic byte acknowledgements.
+pub const ANYWHERE_STREAM_META_HEADER: &str = "X-Kiiaud-Anywhere-Stream";
+/// Internal header key injected by `kiiaud-adapter-lms` carrying a human-readable format hint (`flac`, `wv`, `mp3`, `opus`, etc.).
+pub const ANYWHERE_FORMAT_HINT_HEADER: &str = "X-Kiiaud-Format-Hint";
+
+/// Acknowledge stream bytes to Lyrion Anywhere Gateway at least every 256 KiB.
+const ANYWHERE_ACK_EVERY_BYTES: u64 = 256 * 1024;
+
+type AckCallback = Arc<dyn Fn(&str, u64, u64) + Send + Sync>;
+
+static ANYWHERE_ACK_HANDLER: OnceLock<Mutex<Option<AckCallback>>> = OnceLock::new();
+
+/// Register a callback invoked by `open_http_stream` whenever a Lyrion Anywhere Gateway stream
+/// advances by `ANYWHERE_ACK_EVERY_BYTES` (or finishes).
+pub fn set_anywhere_ack_callback<F>(cb: F)
+where
+    F: Fn(&str, u64, u64) + Send + Sync + 'static,
+{
+    let cell = ANYWHERE_ACK_HANDLER.get_or_init(|| Mutex::new(None));
+    *cell.lock() = Some(Arc::new(cb));
+}
+
+fn notify_anywhere_ack(session: &str, stream_seq: u64, total_bytes: u64) {
+    if let Some(cell) = ANYWHERE_ACK_HANDLER.get()
+        && let Some(cb) = cell.lock().clone()
+    {
+        cb(session, stream_seq, total_bytes);
+    }
+}
+
+/// Reader wrapper that tracks cumulative bytes read and fires Lyrion Anywhere Gateway `{"ack":...}` notifications.
+struct AnywhereAckReader<R> {
+    inner: R,
+    session: String,
+    stream_seq: u64,
+    total_read: u64,
+    last_acked: u64,
+}
+
+impl<R: Read> Read for AnywhereAckReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.total_read += n as u64;
+            if self.total_read - self.last_acked >= ANYWHERE_ACK_EVERY_BYTES {
+                self.last_acked = self.total_read;
+                notify_anywhere_ack(&self.session, self.stream_seq, self.total_read);
+            }
+        }
+        Ok(n)
+    }
+}
 
 /// A streaming non-seekable reader wrapped in a `Mutex` so it satisfies `MediaSource` (`Read + Seek + Send + Sync`).
 pub struct StreamMediaSource {
@@ -66,8 +122,25 @@ pub fn open_http_stream(
             KiiaudError::Source(format!("Failed to build HTTP client: {}", e.without_url()))
         })?;
 
+    let mut anywhere_meta: Option<(String, u64)> = None;
+    let mut custom_format_hint: Option<String> = None;
+
     let mut req = client.get(url);
     for (k, v) in headers {
+        if k.eq_ignore_ascii_case(ANYWHERE_STREAM_META_HEADER) {
+            if let Some((sess, seq_str)) = v.rsplit_once(':')
+                && let Ok(seq) = seq_str.parse::<u64>()
+            {
+                anywhere_meta = Some((sess.to_owned(), seq));
+            }
+            continue;
+        }
+        if k.eq_ignore_ascii_case(ANYWHERE_FORMAT_HINT_HEADER) {
+            if !v.trim().is_empty() {
+                custom_format_hint = Some(v.trim().to_owned());
+            }
+            continue;
+        }
         req = req.header(k.as_str(), v.as_str());
     }
 
@@ -86,18 +159,32 @@ pub fn open_http_stream(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    let ext_hint =
-        url_extension_hint(url).or_else(|| content_type.as_deref().and_then(mime_to_ext));
+    let ext_hint = url_extension_hint(url)
+        .or_else(|| content_type.as_deref().and_then(mime_to_ext))
+        .or(custom_format_hint);
 
     tracing::info!(
         url = %strip_uri_auth(url),
         ?content_type,
         ?ext_hint,
+        anywhere_stream = anywhere_meta.is_some(),
         "opened HTTP audio stream"
     );
 
+    let reader: Box<dyn Read + Send> = if let Some((session, stream_seq)) = anywhere_meta {
+        Box::new(AnywhereAckReader {
+            inner: resp,
+            session,
+            stream_seq,
+            total_read: 0,
+            last_acked: 0,
+        })
+    } else {
+        Box::new(resp)
+    };
+
     Ok((
-        Box::new(StreamMediaSource::new(Box::new(resp), content_len)),
+        Box::new(StreamMediaSource::new(reader, content_len)),
         ext_hint,
     ))
 }

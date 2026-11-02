@@ -15,7 +15,7 @@ The central design principle is:
 Controllers and stream sources may include:
 - **Hi-Fi WebUI**: Embedded browser-based control dashboard and signal path monitor on port `7110`;
 - **Jellyfin**: Remote Control / "Play To" endpoint;
-- **LMS / Lyrion Music Server**: SlimProto client (functioning similarly to `squeezelite`);
+- **LMS / Lyrion Music Server**: Dual-mode SlimProto client — local LAN (`DirectTcp` port 3483, functioning similarly to `squeezelite`) and remote Internet via **[Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere)** (`AnywhereWs` HTTPS/WSS tunnel with bit-perfect `original` passthrough);
 - **MPD clients**: `mpc`, Cantata, MAF, Ymuse...;
 - **CLI / Local IPC / REST**: local scripting and automation (`kiiaudctl`).
 
@@ -91,9 +91,9 @@ Jellyfin, LMS (Lyrion), MPD, WebUI, and CLI are modular protocol and source adap
   - **DSD**: DSF, DFF (uncompressed), WavPack DSD. *(DST decompression is explicitly deferred)*.
 - **Multiple Source Types**: Local file paths (`file://` or `/music/...`) and network streams (`http://`, `https://` direct play streams from Jellyfin, LMS, or web radio).
 - **Multi-Adapter Support**:
-  - **WebUI & REST/SSE (`kiiaud-adapter-web`)**: Embedded Hi-Fi dashboard on port 7110 for real-time signal path inspection and playback controls.
+  - **WebUI & REST/SSE (`kiiaud-adapter-web`)**: Embedded Hi-Fi dashboard on port 7110 for real-time signal path inspection, live adapter hot-reloading, and playback controls.
   - **Jellyfin**: "Play To" client (WebSocket remote control + REST progress reports).
-  - **LMS (Lyrion Music Server)**: SlimProto client (acting as an ultra-clean Rust-based alternative to Squeezelite).
+  - **LMS (Lyrion Music Server & Lyrion Anywhere Gateway)**: SlimProto client supporting both direct LAN (`DirectTcp`) and remote HTTPS/WSS gateway tunneling (`AnywhereWs`, Protocol v2) with interactive WebUI pairing/login and bit-perfect `original` stream passthrough.
   - **MPD**: Lightweight control protocol for standard MPD clients without needing an MPD database.
   - **CLI & Local IPC**: Cross-platform control (`kiiaudctl`) via Unix domain sockets on Linux and local loopback TCP on Windows.
 - **Database-free & Minimal Storage I/O**: Zero database transactions during playback; protects SD cards on embedded hardware.
@@ -108,9 +108,9 @@ Jellyfin, LMS (Lyrion), MPD, WebUI, and CLI are modular protocol and source adap
   - *Dual-licensed under MIT and Apache-2.0.*
   - `rmpd-player` provides a stellar pure-Rust reference implementation for bit-perfect ALSA output, native DSD (`DSD_U32_BE/LE`), and DoP framing. `kiiaud` adapts the audio output pipeline and buffering logic while purposefully omitting database and indexing components.
   - The Symphonia audio decoding fork delivers outstanding support for WavPack PCM, WavPack DSD, and DSF/DFF bitstreams.
-- **[squeezelite](https://github.com/ralph-irving/squeezelite)** (Ralph Irving, Adrian Smith, Triode):
-  - *GPL-3.0.*
-  - The undisputed gold standard for Logitech Media Server / Lyrion Music Server SlimProto client playback, buffer timing, and DSD playback control. `kiiaud` implements a clean-room Rust adapter (`kiiaud-adapter-lms`) adhering to SlimProto specifications to act as a lightweight, zero-dependency endpoint.
+- **[squeezelite](https://github.com/ralph-irving/squeezelite)** (Ralph Irving, Adrian Smith, Triode) & **[Lyrion Anywhere](https://github.com/JameZUK/lyrion-anywhere)** (JameZUK):
+  - `squeezelite` (*GPL-3.0*) is the undisputed gold standard for Logitech Media Server / Lyrion Music Server SlimProto client playback, buffer timing, and DSD playback control. `kiiaud` implements a clean-room Rust adapter (`kiiaud-adapter-lms`) adhering to SlimProto specifications to act as a lightweight, zero-dependency endpoint.
+  - `lyrion-anywhere` defines the remote WebSocket SlimProto tunnel (`WS /v1/player`, Protocol v2), token/pairing authentication, and byte-acknowledged HTTP streaming (`GET /v1/stream/<session>/<seq>`), enabling `kiiaud` to operate seamlessly as a remote bit-perfect Lyrion Anywhere client over the Internet.
 - **[jellyfin-mpv-shim](https://github.com/jellyfin/jellyfin-mpv-shim)** (Ian Walton & the Jellyfin Community):
   - Serves as the key reference for Jellyfin client WebSocket remote control protocol, session lifecycle registration, Direct Play stream negotiation, and playback timeline reporting.
 - **[Music Player Daemon (MPD)](https://www.musicpd.org/)**:
@@ -173,6 +173,9 @@ kiiaud -b asio -d "SXW UAD ASIO" --dsd-mode auto
 
 # Inspect DAC hardware capabilities and registered ASIO drivers:
 kiiaud -b asio --dac-info
+
+# Connect remotely to a Lyrion Anywhere Gateway with a one-time pairing code (Bit-Perfect Passthrough):
+kiiaud --lms --lms-gateway "https://music.example.com" --lms-pair-code "ABCDEFGHJK" --lms-quality original
 ```
 See [Configuration Reference](docs/CONFIGURATION.md) for full details on hierarchy, options, and security.
 

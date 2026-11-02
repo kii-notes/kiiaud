@@ -90,10 +90,10 @@ An audio source is not limited to local disk files. `kiiaud` supports:
 1. **Local Files (`file://` or direct path)**:
    - Direct file handle supporting random access (`std::io::Seek`).
 2. **HTTP/HTTPS Direct Streams**:
-   - For Jellyfin "Play To" and internet radio streams.
+   - For Jellyfin "Play To", LMS HTTP streams, Lyrion Anywhere Gateway (`GET /v1/stream/<session>/<seq>` with Bearer token and 256 KiB byte-acknowledgement flow control), and internet radio streams.
    - Supports HTTP Range headers (`Range: bytes=X-Y`) to enable seeking within remote files without downloading the entire track.
-3. **TCP Stream Chunks**:
-   - For LMS / Lyrion SlimProto audio streaming.
+3. **TCP / WebSocket Stream Chunks**:
+   - For LMS / Lyrion SlimProto control & audio streaming (`DirectTcp` on LAN port 3483 or `AnywhereWs` over `WSS /v1/player`).
 
 ---
 
@@ -270,11 +270,11 @@ All adapters are modular frontends that communicate with the core engine via cha
 - Receives direct audio stream URLs (`/Audio/{itemId}/stream?static=true`).
 - Reports playback progress periodically (`/Sessions/Playing/Progress`) so the Jellyfin Web/Mobile UI displays real-time playback position.
 
-### 11.2 LMS / Lyrion Music Server Adapter (SlimProto)
-- Acts as a modern, lightweight Rust counterpart to `squeezelite`.
-- Connects to LMS via SlimProto (TCP port 3483).
-- Handles discovery, stream setup (`strm`), player status (`stat`), and receives bit-perfect PCM/DSD streams from LMS.
-- Allows users who manage large collections in Lyrion/LMS to use `kiiaud` as a high-end audio endpoint.
+### 11.2 LMS / Lyrion Music Server Adapter (SlimProto & Lyrion Anywhere Gateway)
+- Acts as a modern, lightweight Rust counterpart to `squeezelite` with dual-mode transport (`DirectTcp` and `AnywhereWs`) hot-reloadable at runtime.
+- **`DirectTcp` (LAN)**: Connects directly to LMS via SlimProto (TCP port 3483) and streams over HTTP (port 9000).
+- **`AnywhereWs` (Remote Internet via [Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere))**: Tunnels binary SlimProto over `WSS /v1/player` (Protocol v2), adopts the Gateway-assigned device MAC & name, fetches audio from `GET /v1/stream/<session>/<seq>` (`quality = "original"` bit-perfect passthrough or `"high"`/`"low"` Opus), and sends byte acknowledgements (`{"ack":...}`) every 256 KiB to advance the Gateway's 4 MiB replay buffer.
+- Supports interactive pairing (`lyrion-anywhere://pair?...` / 10-char code) and login (+ TOTP) directly from the embedded WebUI (`/api/lms/gateway-auth`), with automatic 10-minute access token refresh and persistent refresh token rotation.
 
 ### 11.3 MPD Protocol Adapter
 - Minimal TCP server on port 6600.

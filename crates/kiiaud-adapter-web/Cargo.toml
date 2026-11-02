@@ -8,6 +8,7 @@ description = "Lightweight embedded Hi-Fi WebUI & REST/SSE control adapter for k
 [dependencies]
 kiiaud-core.workspace = true
 kiiaud-playback.workspace = true
+kiiaud-adapter-lms.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

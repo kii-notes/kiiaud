@@ -189,18 +189,26 @@ Endpoint tiếp nhận điều khiển phát nhạc từ xa ("Play To" / Cast Ta
 ---
 
 ### 2.7. Section `[adapter.lms]`
-Client kết nối tới Logitech Media Server / Lyrion Music Server (giao thức SlimProto).
+Client kết nối tới Logitech Media Server / Lyrion Music Server (giao thức SlimProto cục bộ `DirectTcp` hoặc từ xa qua [Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere) `AnywhereWs`). Hỗ trợ **hot-reload trực tiếp lúc đang chạy** từ WebUI mà không cần khởi động lại daemon.
 
 | Tham số | Kiểu | Mặc định | Mô tả |
 | :--- | :--- | :--- | :--- |
-| `enabled` | Boolean | `false` | Bật/tắt client LMS/Lyrion. Giả lập một Squeezebox player hoàn chỉnh. |
-| `server_host` | String | `"192.168.1.100"` | Địa chỉ IP hoặc hostname của LMS server. |
-| `server_port` | Integer (u16) | `3483` | Cổng SlimProto TCP của LMS server. |
-| `http_port` | Integer (u16) | `9000` | Cổng HTTP Web của LMS để stream âm thanh. |
-| `player_name` | String | `"kiiaud Squeezebox"` | Tên player hiển thị trong giao diện LMS / Material Skin. |
-| `mac_address` | String hoặc Array 6 bytes | `[2, 75, 73, 73, 65, 85]` | Địa chỉ MAC định danh player trong LMS. Hỗ trợ dạng chuỗi (`"38:D5:47:15:E8:86"`), mảng Hex (`[0x38, ...]`), hoặc mảng số nguyên thập phân (`[56, 213, ...]`). |
-| `max_sample_rate` | Option\<u32\> | `null` (auto) | Tần số lấy mẫu tối đa thông báo tới LMS trong frame HELO (ví dụ: `192000`, `384000`, `768000`). |
+| `enabled` | Boolean | `false` | Bật/tắt client LMS/Lyrion. Giả lập một Squeezebox player hoàn chỉnh (Device ID 12). |
+| `server_host` | String | `"192.168.1.100"` | Địa chỉ IP hoặc hostname của LMS server trong mạng LAN (dùng khi `use_gateway = false`). |
+| `server_port` | Integer (u16) | `3483` | Cổng SlimProto TCP của LMS server (dùng khi `use_gateway = false`). |
+| `http_port` | Integer (u16) | `9000` | Cổng HTTP Web của LMS để stream âm thanh (dùng khi `use_gateway = false`). |
+| `player_name` | String | `"kiiaud Squeezebox"` | Tên player hiển thị trong giao diện LMS / Material Skin (và tên mặc định khi ghép đôi thiết bị mới trên Gateway). |
+| `mac_address` | String hoặc Array 6 bytes | `[2, 75, 73, 73, 65, 85]` | Địa chỉ MAC định danh player trong mạng LAN (`DirectTcp`). Hỗ trợ dạng chuỗi (`"38:D5:47:15:E8:86"`), mảng Hex (`[0x38, ...]`), hoặc mảng số nguyên thập phân (`[56, 213, ...]`). *(Lưu ý: Khi dùng qua Gateway `use_gateway = true`, Gateway sẽ tự động cấp phát và quản lý địa chỉ MAC ảo `02:...` theo định danh thiết bị đã đăng ký).* |
+| `max_sample_rate` | Option\<u32\> | `null` (auto) | Tần số lấy mẫu tối đa thông báo tới LMS trong frame `HELO` (ví dụ: `192000`, `384000`, `768000`). |
 | `dsd_support` | Option\<bool\> | `null` (auto) | Thông báo LMS hỗ trợ phát DSD trực tiếp (`dsf`, `dff`) hay yêu cầu LMS tự động transcode sang PCM. |
+| `use_gateway` | Boolean | `false` | **Chế độ kết nối**: `false` = Kết nối trực tiếp LAN (`DirectTcp` port 3483); `true` = Kết nối từ xa qua **Lyrion Anywhere Gateway** (`AnywhereWs` HTTPS/WSS Protocol v2). Có thể bật/tắt tức thì bằng checkbox trên WebUI. |
+| `gateway_url` | Option\<String\> | `null` | Địa chỉ HTTPS của Lyrion Anywhere Gateway (ví dụ: `"https://music.example.com"`). |
+| `gateway_quality` | String | `"original"` | Chế độ chất lượng âm thanh yêu cầu từ Gateway:<br>- `"original"` (**Khuyên dùng cho Audiophile**): **Bit-Perfect Passthrough** — giữ nguyên luồng FLAC / PCM / WavPack / DSD gốc từ LMS, không transcode.<br>- `"high"`: Gateway transcode sang Opus ~192 kbps (tiết kiệm băng thông di động).<br>- `"low"`: Gateway transcode sang Opus ~96 kbps. |
+| `gateway_refresh_token` | Option\<String\> | `null` | Refresh token dài hạn (90 ngày) dùng cho phiên kết nối Gateway. Tự động được lưu và xoay vòng (rotate) khi đăng nhập hoặc ghép đôi trên WebUI / CLI. |
+| `gateway_device_name` | Option\<String\> | `null` | Tên thiết bị đăng ký trên Gateway khi thực hiện ghép đôi (mặc định lấy theo `player_name` nếu để trống). |
+| `gateway_pairing_code` | Option\<String\> | `null` | Mã ghép đôi dùng 1 lần (`ABCDEFGHJK`) hoặc link `lyrion-anywhere://pair?...` dùng để đổi sang `gateway_refresh_token` trong lần kết nối đầu tiên. |
+| `gateway_username` | Option\<String\> | `null` | Tên đăng nhập tài khoản Gateway (tùy chọn nếu đăng nhập trực tiếp từ CLI/config thay vì dùng WebUI). |
+| `gateway_password` | Option\<String\> | `null` | Mật khẩu tài khoản Gateway (tùy chọn). |
 
 #### 2.7.1. Hướng dẫn toàn diện: Xác định, Quy đổi và Cấu hình Địa chỉ MAC cho LMS
 
@@ -315,6 +323,48 @@ Nếu không muốn dùng địa chỉ MAC thật của card mạng phần cứn
 
 ---
 
+#### 2.7.2. Hướng dẫn Kết nối từ xa qua Lyrion Anywhere Gateway (`AnywhereWs`)
+
+Khi thiết bị chạy `kiiaud` (ở văn phòng, nhà nghỉ, hoặc qua 4G/5G) nằm ngoài mạng LAN của máy chủ LMS ở nhà, bạn có thể kết nối thông qua **[Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere)** chỉ bằng 1 cổng HTTPS duy nhất mà không cần mở port TCP 3483 hay cấu hình VPN.
+
+##### 1. Hai chế độ hoạt động & Chuyển đổi trực tiếp (Live Hot-Reload)
+- **`DirectTcp` (`use_gateway = false`)**: Kết nối trực tiếp tới LMS trong mạng LAN qua giao thức TCP SlimProto (port `3483`) và nhận stream HTTP trực tiếp từ LMS (port `9000`).
+- **`AnywhereWs` (`use_gateway = true`)**: Đóng vai một thiết bị **Lyrion Anywhere Client (Protocol v2)**:
+  - Thiết lập đường hầm WebSocket `WSS /v1/player` tới Gateway.
+  - Tự động nhận và áp dụng địa chỉ MAC ảo (`02:...`) và tên thiết bị do Gateway cấp phát trong bản tin Greeting.
+  - Nhận luồng âm thanh qua `GET <gateway_url>/v1/stream/<session>/<seq>` kèm `Authorization: Bearer <access_token>` và gửi gói xác nhận lưu lượng `{"ack":{"stream":<seq>,"bytes":<total>}}` mỗi **256 KiB** để trượt cửa sổ bộ đệm 4 MiB của Gateway.
+  - Hiển thị đầy đủ thông tin luồng Gateway (`original` Bit-Perfect Passthrough hoặc `high`/`low` Opus) ngay trong bảng **Audiophile Signal Path** trên WebUI.
+
+##### 2. Thao tác Đăng nhập / Ghép đôi và Chuyển chế độ ngay trên WebUI (`http://<ip>:7110`)
+1. Mở trình duyệt truy cập **Hi-Fi WebUI** (`http://<IP-kiiaud>:7110`) -> chuyển sang tab **Config**.
+2. Tại khung **LMS / Lyrion Adapter**:
+   - Đánh dấu chọn **`Enable LMS Adapter`**.
+   - Đánh dấu chọn **`Connect via Lyrion Anywhere Gateway (AnywhereWs — Remote HTTPS/WSS)`**.
+   - Nhập **`Gateway URL`** (ví dụ: `https://music.example.com`) và chọn **`Gateway Stream Quality`** (`original — Bit-Perfect Passthrough` để giữ nguyên FLAC/PCM/WavPack/DSD gốc).
+3. **Xác thực với Gateway ngay trong lúc cấu hình** (chọn 1 trong 2 cách):
+   - **Cách 1 — Mã ghép đôi 1 lần (One-Time Pairing Code — Khuyên dùng)**:
+     - Trên trang quản trị Lyrion Anywhere Gateway (`/admin` hoặc `/pair`), tạo mã ghép đôi 10 ký tự (ví dụ `ABCDEFGHJK`) hoặc copy đường dẫn `lyrion-anywhere://pair?gw=...&code=...`.
+     - Dán vào ô **Option 1: One-Time Pairing Code or Link** và bấm **`Pair Device`**.
+   - **Cách 2 — Tài khoản Username & Password (+ 2FA/TOTP)**:
+     - Nhập Username, Password (và mã TOTP 6 số nếu tài khoản bật 2FA) vào ô **Option 2** rồi bấm **`Sign In & Save Token`**.
+4. Ngay khi xác thực thành công:
+   - `kiiaud` tự động lưu `gateway_refresh_token` (hạn 90 ngày, tự động xoay vòng mỗi 10 phút) vào `kiiaud.toml`.
+   - Phiên kết nối LMS đang chạy được **hot-reload tức thì** sang chế độ `AnywhereWs` mà không cần khởi động lại daemon.
+   - Bấm **`Save Config to Disk`** bất kỳ lúc nào để đổi qua lại giữa `DirectTcp` (bỏ chọn checkbox Gateway) và `AnywhereWs` (chọn checkbox Gateway).
+
+##### 3. Cấu hình mẫu `kiiaud.toml` cho Lyrion Anywhere Gateway
+```toml
+[adapter.lms]
+enabled = true
+player_name = "kiiaud Office DAC"
+use_gateway = true
+gateway_url = "https://music.example.com"
+gateway_quality = "original"          # "original" (Bit-Perfect), "high" (Opus 192k), "low" (Opus 96k)
+gateway_refresh_token = "eyJhbGci..." # Tự động điền sau khi Pair / Login trên WebUI hoặc CLI
+```
+
+---
+
 ## 3. Hệ thống Tham số Dòng lệnh (CLI Flags & Overrides)
 
 Hệ thống tham số dòng lệnh của `kiiaud` được thiết kế đầy đủ và bao quát 100% các option trong file cấu hình. Bất kỳ cờ dòng lệnh nào được truyền vào sẽ **ghi đè giá trị tương ứng của file cấu hình**, bất kể file đó là `/etc/kiiaud/config.toml`, `~/.config/kiiaud/config.toml` hay file truyền qua `--config`.
@@ -360,6 +410,11 @@ Hệ thống tham số dòng lệnh của `kiiaud` được thiết kế đầy 
 | | `--lms-http-port <PORT>` | Integer (`9000`) | `[adapter.lms].http_port` |
 | | `--lms-player-name <NAME>` | String | `[adapter.lms].player_name` |
 | | `--lms-mac <MAC>` | `"02:4B:49:49:41:55"` | `[adapter.lms].mac_address` |
+| | `--lms-gateway <URL>` | `"https://music.example.com"` | `[adapter.lms].gateway_url` *(đồng thời bật `use_gateway = true`)* |
+| | `--lms-user <USER>` | String | `[adapter.lms].gateway_username` |
+| | `--lms-password <PASS>` | String | `[adapter.lms].gateway_password` |
+| | `--lms-pair-code <CODE>` | `"ABCDEFGHJK"` hoặc `lyrion-anywhere://...` | `[adapter.lms].gateway_pairing_code` |
+| | `--lms-quality <QUALITY>` | `"original"`, `"high"`, `"low"` | `[adapter.lms].gateway_quality` |
 
 ### 3.2. Ví dụ thực tế kết hợp Dòng lệnh
 
@@ -382,10 +437,13 @@ kiiaud --web false --mpd false
 # 6. Kích hoạt và kết nối nhanh tới Jellyfin Server mà không cần mở file cấu hình:
 kiiaud --jellyfin --jellyfin-url "http://192.168.1.10:8096" --jellyfin-api-key "secret-key-123"
 
-# 7. Kiểm tra cấu hình kết hợp các cờ ghi đè (không khởi động server):
+# 7. Kết nối từ xa tới Lyrion Anywhere Gateway bằng mã ghép đôi 1 lần (Bit-Perfect Passthrough):
+kiiaud --lms --lms-gateway "https://music.example.com" --lms-pair-code "ABCDEFGHJK" --lms-quality original
+
+# 8. Kiểm tra cấu hình kết hợp các cờ ghi đè (không khởi động server):
 kiiaud --check-config -b asio -d "SXW UAD ASIO" --bit-perfect true
 
-# 8. Xuất ra file TOML mới từ cấu hình hiện tại kết hợp ghi đè dòng lệnh:
+# 9. Xuất ra file TOML mới từ cấu hình hiện tại kết hợp ghi đè dòng lệnh:
 kiiaud --print-config -b asio -d "SXW UAD ASIO" --lms --lms-host "192.168.1.80" > /tmp/resolved.toml
 ```
 
