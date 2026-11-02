@@ -985,10 +985,11 @@ pub fn build_helo_packet(
     max_sample_rate: u32,
     dsd_supported: bool,
 ) -> Vec<u8> {
-    let mut codecs = "wvp,flc,wav,aif,pcm,mp3,ogg,ops".to_string();
+    let mut codecs = String::new();
     if dsd_supported {
-        codecs.push_str(",dsf,dff");
+        codecs.push_str("dsf,dff,");
     }
+    codecs.push_str("wvp,flc,wav,aif,pcm,mp3,ogg,ops");
     // Sanitize ModelName so it has no commas or control chars (required by Lyrion Anywhere HELO capability filter)
     let clean_model_name: String = player_name
         .chars()
