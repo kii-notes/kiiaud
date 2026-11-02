@@ -888,6 +888,7 @@ dependencies = [
  "kiiaud-output-wasapi",
  "kiiaud-playback",
  "libc",
+ "parking_lot",
  "tokio",
  "tracing",
  "tracing-subscriber",

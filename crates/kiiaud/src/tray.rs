@@ -131,112 +131,114 @@ unsafe extern "system" fn tray_wnd_proc(
         WM_LBUTTONUP, WM_RBUTTONUP,
     };
 
-    match msg {
-        WM_TRAYICON => {
-            let event = (lparam.0 & 0xffff) as u32;
-            if event == WM_RBUTTONUP {
-                let mut pt: POINT = core::mem::zeroed();
-                let _ = GetCursorPos(&mut pt);
+    unsafe {
+        match msg {
+            WM_TRAYICON => {
+                let event = (lparam.0 & 0xffff) as u32;
+                if event == WM_RBUTTONUP {
+                    let mut pt: POINT = core::mem::zeroed();
+                    let _ = GetCursorPos(&mut pt);
 
-                if let Ok(hmenu) = CreatePopupMenu() {
-                    let lock = TRAY_STATE.lock();
-                    if let Some(ctx) = lock.as_ref() {
-                        let header = to_wide(&format!("kiiaud — {}", ctx.daemon_name));
-                        let _ = AppendMenuW(hmenu, MF_STRING | MF_GRAYED, 0, PCWSTR(header.as_ptr()));
+                    if let Ok(hmenu) = CreatePopupMenu() {
+                        let lock = TRAY_STATE.lock();
+                        if let Some(ctx) = lock.as_ref() {
+                            let header = to_wide(&format!("kiiaud — {}", ctx.daemon_name));
+                            let _ = AppendMenuW(hmenu, MF_STRING | MF_GRAYED, 0, PCWSTR(header.as_ptr()));
 
-                        let dac_line = to_wide(&format!("DAC: {} ({})", ctx.device_name, ctx.backend));
-                        let _ = AppendMenuW(hmenu, MF_STRING | MF_GRAYED, 0, PCWSTR(dac_line.as_ptr()));
+                            let dac_line = to_wide(&format!("DAC: {} ({})", ctx.device_name, ctx.backend));
+                            let _ = AppendMenuW(hmenu, MF_STRING | MF_GRAYED, 0, PCWSTR(dac_line.as_ptr()));
 
-                        let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                            let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
-                        if let Some(url) = &ctx.web_url {
-                            let web_item = to_wide(&format!("Open WebUI ({url})"));
-                            let _ = AppendMenuW(hmenu, MF_STRING, IDM_OPEN_WEBUI, PCWSTR(web_item.as_ptr()));
+                            if let Some(url) = &ctx.web_url {
+                                let web_item = to_wide(&format!("Open WebUI ({url})"));
+                                let _ = AppendMenuW(hmenu, MF_STRING, IDM_OPEN_WEBUI, PCWSTR(web_item.as_ptr()));
+                            }
+
+                            let con = GetConsoleWindow();
+                            let con_visible = !con.is_invalid() && IsWindowVisible(con).as_bool();
+                            let con_text = to_wide(if con_visible {
+                                "Hide Console Window"
+                            } else {
+                                "Show Console Window"
+                            });
+                            let _ = AppendMenuW(hmenu, MF_STRING, IDM_TOGGLE_CONSOLE, PCWSTR(con_text.as_ptr()));
+
+                            let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                            let exit_text = to_wide("Exit kiiaud");
+                            let _ = AppendMenuW(hmenu, MF_STRING, IDM_EXIT, PCWSTR(exit_text.as_ptr()));
                         }
+                        drop(lock);
 
-                        let con = GetConsoleWindow();
-                        let con_visible = !con.is_invalid() && IsWindowVisible(con).as_bool();
-                        let con_text = to_wide(if con_visible {
-                            "Hide Console Window"
-                        } else {
-                            "Show Console Window"
-                        });
-                        let _ = AppendMenuW(hmenu, MF_STRING, IDM_TOGGLE_CONSOLE, PCWSTR(con_text.as_ptr()));
-
-                        let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-                        let exit_text = to_wide("Exit kiiaud");
-                        let _ = AppendMenuW(hmenu, MF_STRING, IDM_EXIT, PCWSTR(exit_text.as_ptr()));
+                        let _ = SetForegroundWindow(hwnd);
+                        let _ = TrackPopupMenu(
+                            hmenu,
+                            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                            pt.x,
+                            pt.y,
+                            0,
+                            hwnd,
+                            None::<*const RECT>,
+                        );
+                        let _ = DestroyMenu(hmenu);
                     }
-                    drop(lock);
-
-                    let _ = SetForegroundWindow(hwnd);
-                    let _ = TrackPopupMenu(
-                        hmenu,
-                        TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
-                        pt.x,
-                        pt.y,
-                        0,
-                        hwnd,
-                        None::<*const RECT>,
-                    );
-                    let _ = DestroyMenu(hmenu);
-                }
-            } else if event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK {
-                let web_url = TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
-                if let Some(ref url) = web_url {
-                    open_browser(url);
-                } else {
-                    let con = GetConsoleWindow();
-                    if !con.is_invalid() {
-                        if IsWindowVisible(con).as_bool() {
-                            let _ = ShowWindow(con, SW_HIDE);
-                        } else {
-                            let _ = ShowWindow(con, SW_SHOW);
-                        }
-                    }
-                }
-            }
-            LRESULT(0)
-        }
-        WM_COMMAND => {
-            let id = (wparam.0 & 0xffff) as usize;
-            match id {
-                IDM_OPEN_WEBUI => {
-                    let web_url = TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
+                } else if event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK {
+                    let web_url: Option<String> = TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
                     if let Some(ref url) = web_url {
                         open_browser(url);
-                    }
-                }
-                IDM_TOGGLE_CONSOLE => {
-                    let con = GetConsoleWindow();
-                    if !con.is_invalid() {
-                        if IsWindowVisible(con).as_bool() {
-                            let _ = ShowWindow(con, SW_HIDE);
-                        } else {
-                            let _ = ShowWindow(con, SW_SHOW);
+                    } else {
+                        let con = GetConsoleWindow();
+                        if !con.is_invalid() {
+                            if IsWindowVisible(con).as_bool() {
+                                let _ = ShowWindow(con, SW_HIDE);
+                            } else {
+                                let _ = ShowWindow(con, SW_SHOW);
+                            }
                         }
                     }
                 }
-                IDM_EXIT => {
-                    if let Some(ctx) = TRAY_STATE.lock().as_ref() {
-                        let _ = ctx.shutdown_tx.try_send(());
-                    }
-                    let _ = DestroyWindow(hwnd);
-                }
-                _ => {}
+                LRESULT(0)
             }
-            LRESULT(0)
+            WM_COMMAND => {
+                let id = (wparam.0 & 0xffff) as usize;
+                match id {
+                    IDM_OPEN_WEBUI => {
+                        let web_url: Option<String> = TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
+                        if let Some(ref url) = web_url {
+                            open_browser(url);
+                        }
+                    }
+                    IDM_TOGGLE_CONSOLE => {
+                        let con = GetConsoleWindow();
+                        if !con.is_invalid() {
+                            if IsWindowVisible(con).as_bool() {
+                                let _ = ShowWindow(con, SW_HIDE);
+                            } else {
+                                let _ = ShowWindow(con, SW_SHOW);
+                            }
+                        }
+                    }
+                    IDM_EXIT => {
+                        if let Some(ctx) = TRAY_STATE.lock().as_ref() {
+                            let _ = ctx.shutdown_tx.try_send(());
+                        }
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    _ => {}
+                }
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                let mut nid: NOTIFYICONDATAW = core::mem::zeroed();
+                nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+                nid.hWnd = hwnd;
+                nid.uID = 1;
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
-        WM_DESTROY => {
-            let mut nid: NOTIFYICONDATAW = core::mem::zeroed();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 

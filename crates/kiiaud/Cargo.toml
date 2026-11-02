@@ -21,6 +21,7 @@ kiiaud-adapter-mpd.workspace = true
 kiiaud-adapter-jellyfin.workspace = true
 kiiaud-adapter-lms.workspace = true
 kiiaud-adapter-web.workspace = true
+parking_lot.workspace = true
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true
@@ -44,4 +45,5 @@ windows = { version = "0.58", features = [
     "Win32_System_Console",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
 ] }
