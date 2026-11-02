@@ -95,16 +95,17 @@ jobs:
       - name: Setup multiarch & ARM64 cross-dependencies
         run: |
           sudo dpkg --add-architecture arm64
+          SUITE=$(. /etc/os-release && echo "${VERSION_CODENAME:-noble}")
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
             if grep -q "^Architectures:" /etc/apt/sources.list.d/ubuntu.sources; then
               sudo sed -i 's/^Architectures: .*/Architectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
             else
               sudo sed -i '/^URIs:/i Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
             fi
-            printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: noble noble-updates noble-backports noble-security\nComponents: main restricted universe multiverse\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
+            printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: %s %s-updates %s-backports %s-security\nComponents: main restricted universe multiverse\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" "$SUITE" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
           else
             sudo sed -i -e 's/deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
-            printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse\n" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+            printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-updates main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-security main restricted universe multiverse\n" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
           fi
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64

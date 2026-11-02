@@ -12,7 +12,6 @@
 use super::ioctl::*;
 use kiiaud_core::{KiiaudError, Result};
 use std::os::raw::{c_int, c_void};
-use std::os::unix::io::RawFd;
 
 /// Number of isochronous packets per URB submission.
 /// At USB 2.0 High-Speed (125µs microframes), 8 packets = 1 ms of audio.
@@ -204,7 +203,7 @@ impl UsbAudioPipeline {
             slot.urb.flags = USBDEVFS_URB_ISO_ASAP;
             slot.urb.usercontext = slot.as_mut() as *mut UrbSlotData as *mut c_void;
 
-            let ret = unsafe { libc::ioctl(self.fd, USBDEVFS_SUBMITURB, &mut slot.urb) };
+            let ret = unsafe { usbdevfs_ioctl(self.fd, USBDEVFS_SUBMITURB, &mut slot.urb) };
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 tracing::warn!(error = %err, "prime: failed to submit initial silence URB");
@@ -264,8 +263,9 @@ impl UsbAudioPipeline {
                 let to_copy = pkt_len.min(available);
 
                 if to_copy > 0 {
-                    slot.buffer[total_bytes..total_bytes + to_copy]
-                        .copy_from_slice(&input[data_offset + bytes_copied..data_offset + bytes_copied + to_copy]);
+                    slot.buffer[total_bytes..total_bytes + to_copy].copy_from_slice(
+                        &input[data_offset + bytes_copied..data_offset + bytes_copied + to_copy],
+                    );
                     bytes_copied += to_copy;
                 }
 
@@ -285,7 +285,7 @@ impl UsbAudioPipeline {
             slot.urb.flags = USBDEVFS_URB_ISO_ASAP;
             slot.urb.usercontext = slot.as_mut() as *mut UrbSlotData as *mut c_void;
 
-            let ret = unsafe { libc::ioctl(self.fd, USBDEVFS_SUBMITURB, &mut slot.urb) };
+            let ret = unsafe { usbdevfs_ioctl(self.fd, USBDEVFS_SUBMITURB, &mut slot.urb) };
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 tracing::warn!(error = %err, "write_bytes: USBDEVFS_SUBMITURB failed");
@@ -312,13 +312,16 @@ impl UsbAudioPipeline {
         let mut completed_urb: *mut UsbdevfsUrb = std::ptr::null_mut();
 
         loop {
-            let ret = unsafe { libc::ioctl(self.fd, USBDEVFS_REAPURB, &mut completed_urb) };
+            let ret = unsafe { usbdevfs_ioctl(self.fd, USBDEVFS_REAPURB, &mut completed_urb) };
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EINTR) {
                     continue; // Interrupted by signal, retry
                 }
-                return Err(KiiaudError::Output(format!("USBDEVFS_REAPURB error: {}", err)));
+                return Err(KiiaudError::Output(format!(
+                    "USBDEVFS_REAPURB error: {}",
+                    err
+                )));
             }
 
             if completed_urb.is_null() {
@@ -350,7 +353,7 @@ impl UsbAudioPipeline {
         if let Some(fb) = self.feedback.as_mut() {
             fb.urb.flags = USBDEVFS_URB_ISO_ASAP;
             fb.urb.usercontext = fb.as_mut() as *mut FeedbackUrbData as *mut c_void;
-            let ret = unsafe { libc::ioctl(self.fd, USBDEVFS_SUBMITURB, &mut fb.urb) };
+            let ret = unsafe { usbdevfs_ioctl(self.fd, USBDEVFS_SUBMITURB, &mut fb.urb) };
             if ret >= 0 {
                 self.feedback_in_flight = true;
             }
@@ -367,7 +370,10 @@ impl UsbAudioPipeline {
             if actual >= 3 {
                 let b = &fb.buffer;
                 // UAC2 feedback is 10.14 or 16.16 fixed-point
-                let raw = (b[0] as u32) | ((b[1] as u32) << 8) | ((b[2] as u32) << 16) | ((b[3] as u32) << 24);
+                let raw = (b[0] as u32)
+                    | ((b[1] as u32) << 8)
+                    | ((b[2] as u32) << 16)
+                    | ((b[3] as u32) << 24);
                 let new_fpmf = raw as f64 / 65536.0;
 
                 let nominal = self.sample_rate as f64 / self.frames_per_sec;
@@ -400,7 +406,7 @@ impl UsbAudioPipeline {
 
     /// Discard all in-flight URBs immediately.
     pub fn discard(&mut self) -> Result<()> {
-        let _ = unsafe { libc::ioctl(self.fd, USBDEVFS_DISCARDURB, 0) };
+        let _ = unsafe { usbdevfs_ioctl_none(self.fd, USBDEVFS_DISCARDURB) };
         self.urbs_in_flight = 0;
         self.residual_len = 0;
         Ok(())

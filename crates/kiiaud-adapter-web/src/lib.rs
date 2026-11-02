@@ -400,13 +400,7 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
         ("POST", "/api/config") => match serde_json::from_slice::<KiiaudConfig>(&body) {
             Ok(mut new_cfg) => {
                 // Preserve stored gateway_refresh_token if the incoming form left it empty and didn't explicitly clear it
-                let prev_refresh = ctx
-                    .config
-                    .read()
-                    .adapter
-                    .lms
-                    .gateway_refresh_token
-                    .clone();
+                let prev_refresh = ctx.config.read().adapter.lms.gateway_refresh_token.clone();
                 if new_cfg
                     .adapter
                     .lms
@@ -441,7 +435,8 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
                         }
                     }
                 } else {
-                    "Updated runtime configuration and hot-reloaded LMS / Lyrion Anywhere adapter.".to_owned()
+                    "Updated runtime configuration and hot-reloaded LMS / Lyrion Anywhere adapter."
+                        .to_owned()
                 };
                 let ok_json = serde_json::json!({ "ok": true, "message": msg });
                 write_response(
@@ -680,8 +675,7 @@ async fn handle_lms_gateway_auth(
                 .or(cur_cfg.adapter.lms.gateway_url.as_deref())
                 .map(str::to_owned);
 
-            let auth_res =
-                gateway_pair(gw_url_opt.as_deref(), code_input, &player_name).await?;
+            let auth_res = gateway_pair(gw_url_opt.as_deref(), code_input, &player_name).await?;
 
             let mut new_cfg = cur_cfg;
             new_cfg.adapter.lms.enabled = true;

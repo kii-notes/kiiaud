@@ -235,7 +235,9 @@ unsafe extern "system" fn asio_buffer_switch_callback(
             }
             inner.left.drain(..copied);
             if copied < req_bytes {
-                unsafe { std::ptr::write_bytes(dest.add(copied), silence_byte, req_bytes - copied) };
+                unsafe {
+                    std::ptr::write_bytes(dest.add(copied), silence_byte, req_bytes - copied)
+                };
             }
         }
     }
@@ -259,7 +261,9 @@ unsafe extern "system" fn asio_buffer_switch_callback(
             }
             inner.right.drain(..copied);
             if copied < req_bytes {
-                unsafe { std::ptr::write_bytes(dest.add(copied), silence_byte, req_bytes - copied) };
+                unsafe {
+                    std::ptr::write_bytes(dest.add(copied), silence_byte, req_bytes - copied)
+                };
             }
         }
     }
@@ -429,7 +433,9 @@ impl AsioAudioOutput {
 
             let mut init_ok = (vtbl.init)(asio_ptr as *mut std::ffi::c_void, sys_handle);
             if init_ok != sys::ASIO_TRUE && !sys_handle.is_null() {
-                tracing::debug!("IASIO::init with window handle failed, retrying with NULL sysHandle");
+                tracing::debug!(
+                    "IASIO::init with window handle failed, retrying with NULL sysHandle"
+                );
                 init_ok = (vtbl.init)(asio_ptr as *mut std::ffi::c_void, std::ptr::null_mut());
             }
 
@@ -514,13 +520,13 @@ impl AudioOutput for AsioAudioOutput {
                         isInput: 0,
                         ..Default::default()
                     };
-                    let hw = if (vtbl.getChannelInfo)(
-                        asio as *mut std::ffi::c_void,
-                        &mut ch_info,
-                    ) == sys::ASE_OK
+                    let hw = if (vtbl.getChannelInfo)(asio as *mut std::ffi::c_void, &mut ch_info)
+                        == sys::ASE_OK
                     {
                         let mapped = map_asio_sample_type(ch_info.sampleType);
-                        if mapped == AsioHwFormat::DsdInt8LSB1 || mapped == AsioHwFormat::DsdInt8MSB1 {
+                        if mapped == AsioHwFormat::DsdInt8LSB1
+                            || mapped == AsioHwFormat::DsdInt8MSB1
+                        {
                             tracing::warn!(
                                 sample_type = ch_info.sampleType,
                                 "ASIO driver reported DSD format for PCM stream, forcing fallback to Int32LSB"
@@ -598,10 +604,8 @@ impl AudioOutput for AsioAudioOutput {
                                 isInput: 0,
                                 ..Default::default()
                             };
-                            if (vtbl.getChannelInfo)(
-                                asio as *mut std::ffi::c_void,
-                                &mut ch_info,
-                            ) == sys::ASE_OK
+                            if (vtbl.getChannelInfo)(asio as *mut std::ffi::c_void, &mut ch_info)
+                                == sys::ASE_OK
                             {
                                 if ch_info.sampleType == sys::ASIOSTDSDInt8MSB1 {
                                     chosen_hw = AsioHwFormat::DsdInt8MSB1;
@@ -660,15 +664,14 @@ impl AudioOutput for AsioAudioOutput {
                             isInput: 0,
                             ..Default::default()
                         };
-                        let dop_hw = if (vtbl.getChannelInfo)(
-                            asio as *mut std::ffi::c_void,
-                            &mut ch_info,
-                        ) == sys::ASE_OK
-                        {
-                            map_asio_sample_type(ch_info.sampleType)
-                        } else {
-                            AsioHwFormat::Int32LSB24
-                        };
+                        let dop_hw =
+                            if (vtbl.getChannelInfo)(asio as *mut std::ffi::c_void, &mut ch_info)
+                                == sys::ASE_OK
+                            {
+                                map_asio_sample_type(ch_info.sampleType)
+                            } else {
+                                AsioHwFormat::Int32LSB24
+                            };
 
                         (
                             AudioFormat::Dsd {
@@ -863,7 +866,8 @@ impl AudioOutput for AsioAudioOutput {
         }
 
         // Push into synchronized stereo ring buffer
-        self.ring_buffer.push(&self.left_scratch, &self.right_scratch);
+        self.ring_buffer
+            .push(&self.left_scratch, &self.right_scratch);
 
         // Buffer flow control: pace decoding with DAC playback
         while self.is_playing
@@ -1189,13 +1193,34 @@ mod tests {
 
     #[test]
     fn test_map_asio_sample_types() {
-        assert_eq!(map_asio_sample_type(sys::ASIOSTInt16LSB), AsioHwFormat::Int16LSB);
-        assert_eq!(map_asio_sample_type(sys::ASIOSTInt24LSB), AsioHwFormat::Int24LSB);
-        assert_eq!(map_asio_sample_type(sys::ASIOSTInt32LSB), AsioHwFormat::Int32LSB);
-        assert_eq!(map_asio_sample_type(sys::ASIOSTInt32LSB24), AsioHwFormat::Int32LSB24);
-        assert_eq!(map_asio_sample_type(sys::ASIOSTFloat32LSB), AsioHwFormat::Float32LSB);
-        assert_eq!(map_asio_sample_type(sys::ASIOSTDSDInt8LSB1), AsioHwFormat::DsdInt8LSB1);
-        assert_eq!(map_asio_sample_type(sys::ASIOSTDSDInt8MSB1), AsioHwFormat::DsdInt8MSB1);
+        assert_eq!(
+            map_asio_sample_type(sys::ASIOSTInt16LSB),
+            AsioHwFormat::Int16LSB
+        );
+        assert_eq!(
+            map_asio_sample_type(sys::ASIOSTInt24LSB),
+            AsioHwFormat::Int24LSB
+        );
+        assert_eq!(
+            map_asio_sample_type(sys::ASIOSTInt32LSB),
+            AsioHwFormat::Int32LSB
+        );
+        assert_eq!(
+            map_asio_sample_type(sys::ASIOSTInt32LSB24),
+            AsioHwFormat::Int32LSB24
+        );
+        assert_eq!(
+            map_asio_sample_type(sys::ASIOSTFloat32LSB),
+            AsioHwFormat::Float32LSB
+        );
+        assert_eq!(
+            map_asio_sample_type(sys::ASIOSTDSDInt8LSB1),
+            AsioHwFormat::DsdInt8LSB1
+        );
+        assert_eq!(
+            map_asio_sample_type(sys::ASIOSTDSDInt8MSB1),
+            AsioHwFormat::DsdInt8MSB1
+        );
     }
 
     #[test]

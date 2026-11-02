@@ -7,9 +7,7 @@
 
 use crate::usb::UsbAudioStream;
 use kiiaud_core::config::OutputConfig;
-use kiiaud_core::{
-    AudioBuffer, AudioFormat, KiiaudError, OutputCapabilities, Result,
-};
+use kiiaud_core::{AudioBuffer, AudioFormat, KiiaudError, OutputCapabilities, Result};
 use kiiaud_output::AudioOutput;
 
 pub struct AndroidUsbAudioOutput {
@@ -109,7 +107,9 @@ impl AudioOutput for AndroidUsbAudioOutput {
 
     fn write(&mut self, buffer: &AudioBuffer) -> Result<usize> {
         if !self.is_playing {
-            return Err(KiiaudError::Output("USB output is paused or stopped".to_owned()));
+            return Err(KiiaudError::Output(
+                "USB output is paused or stopped".to_owned(),
+            ));
         }
 
         if let Some(stream) = self.stream.as_mut() {
@@ -166,15 +166,27 @@ impl AudioOutput for AndroidUsbAudioOutput {
 
             let device_label = match info.protocol {
                 crate::usb::descriptor::AudioClassVersion::Uac1 => {
-                    format!("USB Audio DAC (UAC1 Endpoint 0x{:02X})", info.best_pcm_alt.as_ref().map(|a| a.endpoint_out).unwrap_or(1))
+                    format!(
+                        "USB Audio DAC (UAC1 Endpoint 0x{:02X})",
+                        info.best_pcm_alt
+                            .as_ref()
+                            .map(|a| a.endpoint_out)
+                            .unwrap_or(1)
+                    )
                 }
                 crate::usb::descriptor::AudioClassVersion::Uac2 => {
-                    format!("USB Audio DAC (UAC2 Clock ID 0x{:02X}, Iface {})", info.clock_source_id, info.streaming_interface)
+                    format!(
+                        "USB Audio DAC (UAC2 Clock ID 0x{:02X}, Iface {})",
+                        info.clock_source_id, info.streaming_interface
+                    )
                 }
             };
 
             OutputCapabilities {
-                backend_name: format!("Android Direct USB Audio (Pure Rust {} Bit-Perfect)", protocol_str),
+                backend_name: format!(
+                    "Android Direct USB Audio (Pure Rust {} Bit-Perfect)",
+                    protocol_str
+                ),
                 device_name: device_label,
                 sample_rates: info.supported_sample_rates.clone(),
                 unsupported_rates: Vec::new(),

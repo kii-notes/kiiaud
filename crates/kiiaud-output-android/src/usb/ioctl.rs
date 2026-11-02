@@ -8,6 +8,47 @@
 
 use std::os::raw::{c_int, c_uchar, c_uint, c_ulong, c_void};
 
+#[cfg(unix)]
+pub type RawFd = std::os::unix::io::RawFd;
+#[cfg(not(unix))]
+pub type RawFd = c_int;
+
+#[cfg(unix)]
+#[inline]
+pub unsafe fn usbdevfs_ioctl<T>(fd: RawFd, request: c_ulong, arg: *mut T) -> c_int {
+    unsafe { libc::ioctl(fd, request as libc::Ioctl, arg) }
+}
+
+#[cfg(not(unix))]
+#[inline]
+pub unsafe fn usbdevfs_ioctl<T>(_fd: RawFd, _request: c_ulong, _arg: *mut T) -> c_int {
+    -1
+}
+
+#[cfg(unix)]
+#[inline]
+pub unsafe fn usbdevfs_ioctl_const<T>(fd: RawFd, request: c_ulong, arg: *const T) -> c_int {
+    unsafe { libc::ioctl(fd, request as libc::Ioctl, arg) }
+}
+
+#[cfg(not(unix))]
+#[inline]
+pub unsafe fn usbdevfs_ioctl_const<T>(_fd: RawFd, _request: c_ulong, _arg: *const T) -> c_int {
+    -1
+}
+
+#[cfg(unix)]
+#[inline]
+pub unsafe fn usbdevfs_ioctl_none(fd: RawFd, request: c_ulong) -> c_int {
+    unsafe { libc::ioctl(fd, request as libc::Ioctl, 0) }
+}
+
+#[cfg(not(unix))]
+#[inline]
+pub unsafe fn usbdevfs_ioctl_none(_fd: RawFd, _request: c_ulong) -> c_int {
+    -1
+}
+
 // ── URB Constants ────────────────────────────────────────────────────────────
 
 /// Isochronous transfer type

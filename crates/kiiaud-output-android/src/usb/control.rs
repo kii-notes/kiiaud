@@ -8,7 +8,6 @@
 use super::ioctl::*;
 use kiiaud_core::{KiiaudError, Result};
 use std::os::raw::c_uint;
-use std::os::unix::io::RawFd;
 
 // UAC Request Types
 pub const USB_REQ_TYPE_CLASS_INTERFACE_OUT: u8 = 0x22;
@@ -34,7 +33,7 @@ pub const USB_CTRL_TIMEOUT_MS: u32 = 1000;
 /// This detaches any kernel driver (such as `snd-usb-audio`) from the interface.
 pub fn claim_interface(fd: RawFd, interface_id: u8) -> Result<()> {
     let iface = interface_id as c_uint;
-    let ret = unsafe { libc::ioctl(fd, USBDEVFS_CLAIMINTERFACE, &iface) };
+    let ret = unsafe { usbdevfs_ioctl_const(fd, USBDEVFS_CLAIMINTERFACE, &iface) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         tracing::warn!(
@@ -43,7 +42,10 @@ pub fn claim_interface(fd: RawFd, interface_id: u8) -> Result<()> {
             "failed to claim USB interface via usbdevfs (may already be claimed by Android UsbManager)"
         );
     } else {
-        tracing::debug!(interface_id = interface_id, "USB interface claimed successfully");
+        tracing::debug!(
+            interface_id = interface_id,
+            "USB interface claimed successfully"
+        );
     }
     Ok(())
 }
@@ -51,7 +53,7 @@ pub fn claim_interface(fd: RawFd, interface_id: u8) -> Result<()> {
 /// Release a claimed interface via `USBDEVFS_RELEASEINTERFACE`.
 pub fn release_interface(fd: RawFd, interface_id: u8) -> Result<()> {
     let iface = interface_id as c_uint;
-    let ret = unsafe { libc::ioctl(fd, USBDEVFS_RELEASEINTERFACE, &iface) };
+    let ret = unsafe { usbdevfs_ioctl_const(fd, USBDEVFS_RELEASEINTERFACE, &iface) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         tracing::debug!(
@@ -72,7 +74,7 @@ pub fn set_interface(fd: RawFd, interface_id: u8, alt_setting: u8) -> Result<()>
         interface: interface_id as c_uint,
         altsetting: alt_setting as c_uint,
     };
-    let ret = unsafe { libc::ioctl(fd, USBDEVFS_SETINTERFACE, &mut param) };
+    let ret = unsafe { usbdevfs_ioctl(fd, USBDEVFS_SETINTERFACE, &mut param) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         return Err(KiiaudError::Output(format!(
@@ -90,7 +92,7 @@ pub fn set_interface(fd: RawFd, interface_id: u8, alt_setting: u8) -> Result<()>
 
 /// Reset the USB device via `USBDEVFS_RESET`.
 pub fn reset_device(fd: RawFd) -> Result<()> {
-    let ret = unsafe { libc::ioctl(fd, USBDEVFS_RESET, 0) };
+    let ret = unsafe { usbdevfs_ioctl_none(fd, USBDEVFS_RESET) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         tracing::warn!(error = %err, "USBDEVFS_RESET returned error");
@@ -121,7 +123,7 @@ pub fn set_uac2_sample_rate(
         data: rate_bytes.as_mut_ptr() as *mut _,
     };
 
-    let ret = unsafe { libc::ioctl(fd, USBDEVFS_CONTROL, &mut transfer) };
+    let ret = unsafe { usbdevfs_ioctl(fd, USBDEVFS_CONTROL, &mut transfer) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         return Err(KiiaudError::Output(format!(
@@ -141,11 +143,7 @@ pub fn set_uac2_sample_rate(
 /// Set DAC sample rate for UAC1 via Endpoint Sampling Frequency Control (`SET_CUR`).
 ///
 /// UAC1 transmits a 3-byte sample rate directly to the Isochronous OUT endpoint.
-pub fn set_uac1_sample_rate(
-    fd: RawFd,
-    endpoint: u8,
-    sample_rate: u32,
-) -> Result<()> {
+pub fn set_uac1_sample_rate(fd: RawFd, endpoint: u8, sample_rate: u32) -> Result<()> {
     let mut rate_bytes = [
         (sample_rate & 0xFF) as u8,
         ((sample_rate >> 8) & 0xFF) as u8,
@@ -162,7 +160,7 @@ pub fn set_uac1_sample_rate(
         data: rate_bytes.as_mut_ptr() as *mut _,
     };
 
-    let ret = unsafe { libc::ioctl(fd, USBDEVFS_CONTROL, &mut transfer) };
+    let ret = unsafe { usbdevfs_ioctl(fd, USBDEVFS_CONTROL, &mut transfer) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         return Err(KiiaudError::Output(format!(

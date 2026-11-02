@@ -14,10 +14,11 @@ use control::*;
 use descriptor::*;
 use pipeline::*;
 
-use kiiaud_core::{AudioBuffer, AudioFormat, DsdMode, DsdTransport, KiiaudError, Result, SampleFormat};
+use ioctl::RawFd;
+use kiiaud_core::{
+    AudioBuffer, AudioFormat, DsdMode, DsdTransport, KiiaudError, Result, SampleFormat,
+};
 use kiiaud_output::dop::DopEncoder;
-use std::fs::File;
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 
 pub struct UsbAudioStream {
     fd: RawFd,
@@ -35,18 +36,35 @@ impl UsbAudioStream {
     /// or a raw USB device node path (`/dev/bus/usb/xxx/yyy`).
     pub fn open_device(device_spec: &str) -> Result<Self> {
         let (fd, owns_fd) = if let Some(fd_str) = device_spec.strip_prefix("fd:") {
-            let parsed_fd: RawFd = fd_str
-                .parse()
-                .map_err(|e| KiiaudError::Output(format!("Invalid file descriptor '{}': {}", fd_str, e)))?;
+            let parsed_fd: RawFd = fd_str.parse().map_err(|e| {
+                KiiaudError::Output(format!("Invalid file descriptor '{}': {}", fd_str, e))
+            })?;
             (parsed_fd, false)
         } else if device_spec.starts_with('/') {
             // Raw devfs path
-            let file = File::options()
-                .read(true)
-                .write(true)
-                .open(device_spec)
-                .map_err(|e| KiiaudError::Output(format!("Failed to open USB device '{}': {}", device_spec, e)))?;
-            (file.into_raw_fd(), true)
+            #[cfg(unix)]
+            {
+                use std::fs::File;
+                use std::os::unix::io::IntoRawFd;
+                let file = File::options()
+                    .read(true)
+                    .write(true)
+                    .open(device_spec)
+                    .map_err(|e| {
+                        KiiaudError::Output(format!(
+                            "Failed to open USB device '{}': {}",
+                            device_spec, e
+                        ))
+                    })?;
+                (file.into_raw_fd(), true)
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(KiiaudError::Output(
+                    "Direct USB Audio via usbdevfs is only supported on Android and Linux"
+                        .to_owned(),
+                ));
+            }
         } else {
             // Default fallback: scan /dev/bus/usb or return error
             return Err(KiiaudError::Output(format!(
@@ -60,7 +78,9 @@ impl UsbAudioStream {
         let device_info = ParsedUsbAudioDevice::parse(&raw_descriptors)?;
 
         let best_alt = device_info.best_pcm_alt.clone().ok_or_else(|| {
-            KiiaudError::Output("No suitable PCM AudioStreaming alternate setting found on USB DAC".to_owned())
+            KiiaudError::Output(
+                "No suitable PCM AudioStreaming alternate setting found on USB DAC".to_owned(),
+            )
         })?;
 
         tracing::info!(
@@ -94,8 +114,18 @@ impl UsbAudioStream {
     /// Configure and start the audio stream for the given format.
     pub fn configure(&mut self, format: &AudioFormat, dsd_mode: DsdMode) -> Result<AudioFormat> {
         let (sample_rate, channels, is_dsd) = match *format {
-            AudioFormat::Pcm { sample_rate, channels, .. } => (sample_rate, channels as u32, false),
-            AudioFormat::Dsd { rate, channels, bit_order, layout, .. } => {
+            AudioFormat::Pcm {
+                sample_rate,
+                channels,
+                ..
+            } => (sample_rate, channels as u32, false),
+            AudioFormat::Dsd {
+                rate,
+                channels,
+                bit_order,
+                layout,
+                ..
+            } => {
                 if dsd_mode == DsdMode::Native && self.device_info.dsd_native_alt.is_some() {
                     // Native DSD via dedicated alt setting
                     (rate.hz(), channels as u32, true)
@@ -126,11 +156,7 @@ impl UsbAudioStream {
             }
             AudioClassVersion::Uac1 => {
                 // UAC1: Configure Endpoint Sampling Frequency Control via SET_CUR
-                set_uac1_sample_rate(
-                    self.fd,
-                    self.active_alt.endpoint_out,
-                    sample_rate,
-                )?;
+                set_uac1_sample_rate(self.fd, self.active_alt.endpoint_out, sample_rate)?;
                 1000.0 // USB Full Speed: 1ms frame
             }
         };
@@ -146,7 +172,11 @@ impl UsbAudioStream {
             self.active_alt.clone()
         };
 
-        set_interface(self.fd, self.device_info.streaming_interface, target_alt.alt_setting)?;
+        set_interface(
+            self.fd,
+            self.device_info.streaming_interface,
+            target_alt.alt_setting,
+        )?;
 
         // 4. Create and prime the 80 URB pipeline (Bug 4 fix)
         let mut pipe = UsbAudioPipeline::new(
@@ -211,10 +241,18 @@ impl UsbAudioStream {
 
         match buffer {
             AudioBuffer::PcmI32 { samples, .. } => {
-                pack_i32_to_usb_bytes(samples, self.active_alt.subslot_size, &mut self.byte_scratch);
+                pack_i32_to_usb_bytes(
+                    samples,
+                    self.active_alt.subslot_size,
+                    &mut self.byte_scratch,
+                );
             }
             AudioBuffer::PcmF32 { samples, .. } => {
-                pack_f32_to_usb_bytes(samples, self.active_alt.subslot_size, &mut self.byte_scratch);
+                pack_f32_to_usb_bytes(
+                    samples,
+                    self.active_alt.subslot_size,
+                    &mut self.byte_scratch,
+                );
             }
             AudioBuffer::Dsd { data, .. } => {
                 if let Some(enc) = self.dop_encoder.as_mut() {
@@ -262,7 +300,10 @@ impl Drop for UsbAudioStream {
         let _ = release_interface(self.fd, self.device_info.streaming_interface);
         let _ = release_interface(self.fd, self.device_info.control_interface);
         if self.owns_fd {
+            #[cfg(unix)]
             unsafe {
+                use std::fs::File;
+                use std::os::unix::io::FromRawFd;
                 let _ = File::from_raw_fd(self.fd);
             }
         }
@@ -284,7 +325,7 @@ fn read_raw_descriptors(fd: RawFd) -> Result<Vec<u8>> {
         data: buf.as_mut_ptr() as *mut _,
     };
 
-    let ret = unsafe { libc::ioctl(fd, ioctl::USBDEVFS_CONTROL, &mut transfer) };
+    let ret = unsafe { ioctl::usbdevfs_ioctl(fd, ioctl::USBDEVFS_CONTROL, &mut transfer) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         return Err(KiiaudError::Output(format!(

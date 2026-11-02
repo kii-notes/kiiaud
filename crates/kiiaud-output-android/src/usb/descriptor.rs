@@ -49,11 +49,11 @@ pub enum AudioClassVersion {
 pub struct AltSettingInfo {
     pub alt_setting: u8,
     pub format_type: u8,
-    pub subslot_size: u8,      // 2, 3, or 4 bytes
-    pub bit_resolution: u8,    // 16, 24, 32 bits
+    pub subslot_size: u8,   // 2, 3, or 4 bytes
+    pub bit_resolution: u8, // 16, 24, 32 bits
     pub channels: u8,
-    pub endpoint_out: u8,      // e.g. 0x01, 0x02
-    pub max_packet_size: u16,  // Isochronous OUT max packet size
+    pub endpoint_out: u8,              // e.g. 0x01, 0x02
+    pub max_packet_size: u16,          // Isochronous OUT max packet size
     pub endpoint_feedback: Option<u8>, // e.g. 0x81, 0x82
     pub is_dsd_native: bool,
     pub sample_rates: Vec<u32>, // Discovered sample rates (esp. for UAC1)
@@ -166,7 +166,10 @@ impl ParsedUsbAudioDevice {
                         // UAC2: CLOCK_SOURCE entity descriptor
                         if subtype == UAC2_CLOCK_SOURCE && clock_source_id.is_none() {
                             let clk_id = raw[i + 3];
-                            tracing::info!(clock_id = clk_id, "found UAC2 CLOCK_SOURCE entity in descriptor");
+                            tracing::info!(
+                                clock_id = clk_id,
+                                "found UAC2 CLOCK_SOURCE entity in descriptor"
+                            );
                             clock_source_id = Some(clk_id);
                         }
                     } else if in_audio_streaming && length >= 6 {
@@ -305,15 +308,71 @@ mod tests {
     fn test_parse_sample_uac2_descriptors() {
         let mut raw = Vec::new();
         // 1. Interface AudioControl (protocol=0x20 UAC2)
-        raw.extend_from_slice(&[9, USB_DESC_TYPE_INTERFACE, 0, 0, 0, USB_CLASS_AUDIO, USB_SUBCLASS_AUDIOCONTROL, USB_PROTOCOL_UAC2, 0]);
+        raw.extend_from_slice(&[
+            9,
+            USB_DESC_TYPE_INTERFACE,
+            0,
+            0,
+            0,
+            USB_CLASS_AUDIO,
+            USB_SUBCLASS_AUDIOCONTROL,
+            USB_PROTOCOL_UAC2,
+            0,
+        ]);
         // 2. CS_INTERFACE CLOCK_SOURCE (bClockID=0x05)
-        raw.extend_from_slice(&[8, USB_DESC_TYPE_CS_INTERFACE, UAC2_CLOCK_SOURCE, 0x05, 0x03, 0x07, 0x00, 0x00]);
+        raw.extend_from_slice(&[
+            8,
+            USB_DESC_TYPE_CS_INTERFACE,
+            UAC2_CLOCK_SOURCE,
+            0x05,
+            0x03,
+            0x07,
+            0x00,
+            0x00,
+        ]);
         // 3. Interface AudioStreaming Alt 0
-        raw.extend_from_slice(&[9, USB_DESC_TYPE_INTERFACE, 1, 0, 0, USB_CLASS_AUDIO, USB_SUBCLASS_AUDIOSTREAMING, USB_PROTOCOL_UAC2, 0]);
+        raw.extend_from_slice(&[
+            9,
+            USB_DESC_TYPE_INTERFACE,
+            1,
+            0,
+            0,
+            USB_CLASS_AUDIO,
+            USB_SUBCLASS_AUDIOSTREAMING,
+            USB_PROTOCOL_UAC2,
+            0,
+        ]);
         // 4. Interface AudioStreaming Alt 1 (32-bit)
-        raw.extend_from_slice(&[9, USB_DESC_TYPE_INTERFACE, 1, 1, 2, USB_CLASS_AUDIO, USB_SUBCLASS_AUDIOSTREAMING, USB_PROTOCOL_UAC2, 0]);
-        raw.extend_from_slice(&[6, USB_DESC_TYPE_CS_INTERFACE, UAC_FORMAT_TYPE, UAC_FORMAT_TYPE_I, 4, 32]);
-        raw.extend_from_slice(&[9, USB_DESC_TYPE_ENDPOINT, 0x01, 0x01, 0x00, 0x04, 1, 0, 0x81]);
+        raw.extend_from_slice(&[
+            9,
+            USB_DESC_TYPE_INTERFACE,
+            1,
+            1,
+            2,
+            USB_CLASS_AUDIO,
+            USB_SUBCLASS_AUDIOSTREAMING,
+            USB_PROTOCOL_UAC2,
+            0,
+        ]);
+        raw.extend_from_slice(&[
+            6,
+            USB_DESC_TYPE_CS_INTERFACE,
+            UAC_FORMAT_TYPE,
+            UAC_FORMAT_TYPE_I,
+            4,
+            32,
+        ]);
+        raw.extend_from_slice(&[
+            9,
+            USB_DESC_TYPE_ENDPOINT,
+            0x01,
+            0x01,
+            0x00,
+            0x04,
+            1,
+            0,
+            0x81,
+        ]);
 
         let parsed = ParsedUsbAudioDevice::parse(&raw).unwrap();
         assert_eq!(parsed.protocol, AudioClassVersion::Uac2);
@@ -326,18 +385,58 @@ mod tests {
     fn test_parse_sample_uac1_descriptors() {
         let mut raw = Vec::new();
         // 1. Interface AudioControl (protocol=0x00 UAC1)
-        raw.extend_from_slice(&[9, USB_DESC_TYPE_INTERFACE, 0, 0, 0, USB_CLASS_AUDIO, USB_SUBCLASS_AUDIOCONTROL, USB_PROTOCOL_UAC1, 0]);
+        raw.extend_from_slice(&[
+            9,
+            USB_DESC_TYPE_INTERFACE,
+            0,
+            0,
+            0,
+            USB_CLASS_AUDIO,
+            USB_SUBCLASS_AUDIOCONTROL,
+            USB_PROTOCOL_UAC1,
+            0,
+        ]);
         // 2. Interface AudioStreaming Alt 0
-        raw.extend_from_slice(&[9, USB_DESC_TYPE_INTERFACE, 1, 0, 0, USB_CLASS_AUDIO, USB_SUBCLASS_AUDIOSTREAMING, USB_PROTOCOL_UAC1, 0]);
+        raw.extend_from_slice(&[
+            9,
+            USB_DESC_TYPE_INTERFACE,
+            1,
+            0,
+            0,
+            USB_CLASS_AUDIO,
+            USB_SUBCLASS_AUDIOSTREAMING,
+            USB_PROTOCOL_UAC1,
+            0,
+        ]);
         // 3. Interface AudioStreaming Alt 1 (UAC1 Format Type I: 2 channels, subslot=2, bits=16, 2 discrete rates: 44.1k and 48k)
-        raw.extend_from_slice(&[9, USB_DESC_TYPE_INTERFACE, 1, 1, 1, USB_CLASS_AUDIO, USB_SUBCLASS_AUDIOSTREAMING, USB_PROTOCOL_UAC1, 0]);
+        raw.extend_from_slice(&[
+            9,
+            USB_DESC_TYPE_INTERFACE,
+            1,
+            1,
+            1,
+            USB_CLASS_AUDIO,
+            USB_SUBCLASS_AUDIOSTREAMING,
+            USB_PROTOCOL_UAC1,
+            0,
+        ]);
         // Format Type I: length=14, subtype=0x02, format=0x01, channels=2, subslot=2, bits=16, samFreqType=2
         // rate 1: 44100 (0x44, 0xAC, 0x00), rate 2: 48000 (0x80, 0xBB, 0x00)
         raw.extend_from_slice(&[
-            14, USB_DESC_TYPE_CS_INTERFACE, UAC_FORMAT_TYPE, UAC_FORMAT_TYPE_I,
-            2, 2, 16, 2,
-            0x44, 0xAC, 0x00,
-            0x80, 0xBB, 0x00,
+            14,
+            USB_DESC_TYPE_CS_INTERFACE,
+            UAC_FORMAT_TYPE,
+            UAC_FORMAT_TYPE_I,
+            2,
+            2,
+            16,
+            2,
+            0x44,
+            0xAC,
+            0x00,
+            0x80,
+            0xBB,
+            0x00,
         ]);
         // Endpoint 0x01 OUT (Isochronous, max_pkt=192)
         raw.extend_from_slice(&[9, USB_DESC_TYPE_ENDPOINT, 0x01, 0x01, 192, 0, 1, 0, 0]);

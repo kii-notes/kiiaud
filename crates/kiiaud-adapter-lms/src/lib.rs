@@ -134,7 +134,8 @@ pub fn parse_pairing_input(input: &str) -> std::result::Result<(Option<String>, 
                 }
             }
         }
-        let code = code_opt.ok_or_else(|| "Pairing link is missing 'code=' parameter".to_owned())?;
+        let code =
+            code_opt.ok_or_else(|| "Pairing link is missing 'code=' parameter".to_owned())?;
         return Ok((server_opt, code));
     }
 
@@ -183,7 +184,10 @@ pub fn normalize_gateway_url(raw: &str) -> std::result::Result<String, String> {
         return Err("Gateway URL cannot be empty".to_owned());
     }
     if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
-        return Err("Gateway URL must start with https:// (or http:// for trusted private networks)".to_owned());
+        return Err(
+            "Gateway URL must start with https:// (or http:// for trusted private networks)"
+                .to_owned(),
+        );
     }
     Ok(trimmed.to_owned())
 }
@@ -233,7 +237,9 @@ pub async fn gateway_login(
     let v: serde_json::Value = resp.json().await.unwrap_or_default();
     if !status.is_success() {
         if v.get("totp_required").and_then(|b| b.as_bool()) == Some(true) {
-            return Err("TOTP_REQUIRED: Two-step verification code (6 digits) is required".to_owned());
+            return Err(
+                "TOTP_REQUIRED: Two-step verification code (6 digits) is required".to_owned(),
+            );
         }
         let err_msg = v
             .get("error")
@@ -863,7 +869,9 @@ async fn resolve_anywhere_tokens(
         match gateway_refresh_token(base_url, refresh, "player").await {
             Ok((acc, new_ref)) => return Ok((acc, new_ref)),
             Err(e) => {
-                tracing::warn!("stored gateway_refresh_token rejected ({e}); attempting fallback credentials");
+                tracing::warn!(
+                    "stored gateway_refresh_token rejected ({e}); attempting fallback credentials"
+                );
             }
         }
     }
@@ -886,16 +894,16 @@ async fn resolve_anywhere_tokens(
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty()),
-        config
-            .gateway_password
-            .as_deref()
-            .filter(|s| !s.is_empty()),
+        config.gateway_password.as_deref().filter(|s| !s.is_empty()),
     ) {
         let res = gateway_login(base_url, user, pass, None, &config.player_name).await?;
         return Ok((res.access_token, res.refresh_token));
     }
 
-    Err("Lyrion Anywhere Gateway requires authentication (Sign In or Pair Device in WebUI Config)".to_owned())
+    Err(
+        "Lyrion Anywhere Gateway requires authentication (Sign In or Pair Device in WebUI Config)"
+            .to_owned(),
+    )
 }
 
 fn persist_rotated_refresh_token(new_refresh: &str) {
@@ -940,9 +948,7 @@ fn build_event_stat_packet(
         PlaybackEvent::TrackStarted { .. } => {
             Some(build_stat_packet(b"STMs", engine, start_epoch, 0))
         }
-        PlaybackEvent::TrackEnded(_) => {
-            Some(build_stat_packet(b"STMd", engine, start_epoch, 0))
-        }
+        PlaybackEvent::TrackEnded(_) => Some(build_stat_packet(b"STMd", engine, start_epoch, 0)),
         PlaybackEvent::StateChanged(PlayerState::Stop) => {
             Some(build_stat_packet(b"STMu", engine, start_epoch, 0))
         }
@@ -1318,10 +1324,7 @@ mod tests {
                     "http://192.168.1.100:9000/stream.mp3?player=02:11:22:33:44:55"
                 );
                 assert_eq!(headers.get("Authorization").unwrap(), "Basic abc");
-                assert_eq!(
-                    headers.get(ANYWHERE_FORMAT_HINT_HEADER).unwrap(),
-                    "flac"
-                );
+                assert_eq!(headers.get(ANYWHERE_FORMAT_HINT_HEADER).unwrap(), "flac");
             }
             _ => panic!("expected HttpStream"),
         }
