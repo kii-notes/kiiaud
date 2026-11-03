@@ -604,10 +604,10 @@ impl AudioOutput for AlsaAudioOutput {
 pub fn detect_hardware_capabilities(device: &str, bit_perfect_cfg: bool) -> OutputCapabilities {
     let card_id = extract_card_id(device);
 
-    let (dev_name, stream_rates, stream_bits) = if let Some(ref cid) = card_id {
+    let (dev_name, stream_rates, stream_bits, stream_dsd_native) = if let Some(ref cid) = card_id {
         parse_proc_stream0(cid)
     } else {
-        (None, Vec::new(), Vec::new())
+        (None, Vec::new(), Vec::new(), false)
     };
 
     let device_name = dev_name.unwrap_or_else(|| {
@@ -649,6 +649,19 @@ pub fn detect_hardware_capabilities(device: &str, bit_perfect_cfg: bool) -> Outp
 
     let dsd_dop = supported_rates.iter().any(|&r| r >= 176400);
 
+    let dsd_native = if stream_dsd_native {
+        true
+    } else {
+        #[cfg(target_os = "linux")]
+        {
+            probe_alsa_native_dsd(device)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    };
+
     OutputCapabilities {
         backend_name: "ALSA Hardware Direct (hw:)".to_owned(),
         device_name,
@@ -659,7 +672,7 @@ pub fn detect_hardware_capabilities(device: &str, bit_perfect_cfg: bool) -> Outp
         exclusive: true,
         bit_perfect: bit_perfect_cfg,
         adaptive_fallback: true,
-        dsd_native: false,
+        dsd_native,
         dsd_dop,
     }
 }
@@ -686,7 +699,7 @@ pub fn extract_card_id(device: &str) -> Option<String> {
     None
 }
 
-pub fn parse_proc_stream0(card_id: &str) -> (Option<String>, Vec<u32>, Vec<u8>) {
+pub fn parse_proc_stream0(card_id: &str) -> (Option<String>, Vec<u32>, Vec<u8>, bool) {
     let paths = [
         format!("/proc/asound/{card_id}/stream0"),
         format!("/proc/asound/card{card_id}/stream0"),
@@ -694,12 +707,18 @@ pub fn parse_proc_stream0(card_id: &str) -> (Option<String>, Vec<u32>, Vec<u8>) 
 
     let content = paths.iter().find_map(|p| std::fs::read_to_string(p).ok());
     let Some(text) = content else {
-        return (None, Vec::new(), Vec::new());
+        return (None, Vec::new(), Vec::new(), false);
     };
 
+    parse_proc_stream0_content(&text)
+}
+
+pub fn parse_proc_stream0_content(text: &str) -> (Option<String>, Vec<u32>, Vec<u8>, bool) {
     let mut name = None;
     let mut rates = std::collections::BTreeSet::new();
     let mut bits = std::collections::BTreeSet::new();
+    let mut dsd_native = false;
+    let mut in_playback = true;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -714,18 +733,43 @@ pub fn parse_proc_stream0(card_id: &str) -> (Option<String>, Vec<u32>, Vec<u8>) 
             name = Some(dev_name);
         }
 
-        if let Some(rest) = trimmed.strip_prefix("Rates:") {
-            for token in rest.split_whitespace() {
-                if let Ok(r) = token.trim_matches(',').parse::<u32>() {
-                    rates.insert(r);
-                }
-            }
+        if trimmed == "Playback:" {
+            in_playback = true;
+            continue;
+        } else if trimmed == "Capture:" {
+            in_playback = false;
+            continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("Bits:") {
-            for token in rest.split_whitespace() {
-                if let Ok(b) = token.trim_matches(',').parse::<u8>() {
-                    bits.insert(b);
+        if in_playback {
+            if let Some(rest) = trimmed.strip_prefix("Format:") {
+                let fmt = rest.trim();
+                if fmt.contains("DSD_U32_BE")
+                    || fmt.contains("DSD_U32_LE")
+                    || fmt.contains("DSD_U16_LE")
+                    || fmt.contains("DSD_U8")
+                    || fmt.contains("SPECIAL DSD")
+                    || fmt.contains("DSD")
+                {
+                    dsd_native = true;
+                }
+            } else if trimmed.starts_with("DSD raw:") || trimmed.starts_with("DSD:") {
+                dsd_native = true;
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("Rates:") {
+                for token in rest.split_whitespace() {
+                    if let Ok(r) = token.trim_matches(',').parse::<u32>() {
+                        rates.insert(r);
+                    }
+                }
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("Bits:") {
+                for token in rest.split_whitespace() {
+                    if let Ok(b) = token.trim_matches(',').parse::<u8>() {
+                        bits.insert(b);
+                    }
                 }
             }
         }
@@ -735,6 +779,7 @@ pub fn parse_proc_stream0(card_id: &str) -> (Option<String>, Vec<u32>, Vec<u8>) 
         name,
         rates.into_iter().collect(),
         bits.into_iter().collect(),
+        dsd_native,
     )
 }
 
@@ -774,6 +819,23 @@ fn probe_alsa_rates(device: &str, candidates: &[u32]) -> Vec<u32> {
         supported = vec![44100, 48000, 96000, 192000];
     }
     supported
+}
+
+#[cfg(target_os = "linux")]
+fn probe_alsa_native_dsd(device: &str) -> bool {
+    if let Ok(pcm) = PCM::new(device, Direction::Playback, false) {
+        for &fmt in &[AlsaFormat::DSDU32BE, AlsaFormat::DSDU32LE] {
+            if let Ok(hwp) = HwParams::any(&pcm) {
+                let _ = hwp.set_rate_resample(false);
+                let _ = hwp.set_access(Access::RWInterleaved);
+                let _ = hwp.set_channels(2);
+                if hwp.set_format(fmt).is_ok() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Convert MSB-aligned 32-bit signed integers (`i32`) into exact ALSA hardware byte layout.
@@ -908,5 +970,75 @@ mod tests {
         assert!(caps.sample_rates.contains(&192000));
         assert!(caps.unsupported_rates.contains(&88200));
         assert!(caps.unsupported_rates.contains(&176400));
+    }
+
+    #[test]
+    fn test_parse_proc_stream0_content_dsd_native() {
+        let stream0_data = r#"
+SXW Tech USB HIFI AUDIO at usb-xhci-hcd.0-1, high speed : USB Audio
+
+Playback:
+  Status: Running
+    Interface = 1
+    Altset = 1
+    Packet Size = 36
+    Momentary freq = 44104 Hz (0x5.8350)
+  Interface 1
+    Altset 1
+    Format: S16_LE
+    Channels: 2
+    Rates: 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+    Bits: 16
+  Interface 1
+    Altset 2
+    Format: S24_3LE
+    Channels: 2
+    Rates: 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+    Bits: 24
+  Interface 1
+    Altset 3
+    Format: S32_LE
+    Channels: 2
+    Rates: 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+    Bits: 32
+  Interface 1
+    Altset 4
+    Format: SPECIAL DSD_U32_BE
+    Channels: 2
+    Rates: 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+    Bits: 32
+    DSD raw: DOP=0, bitrev=0
+
+Capture:
+  Status: Stop
+"#;
+        let (name, rates, bits, dsd_native) = parse_proc_stream0_content(stream0_data);
+        assert_eq!(name, Some("SXW Tech USB HIFI AUDIO".to_owned()));
+        assert_eq!(rates.len(), 8);
+        assert_eq!(rates[0], 44100);
+        assert_eq!(*rates.last().unwrap(), 384000);
+        assert_eq!(bits, vec![16, 24, 32]);
+        assert!(dsd_native, "Expected Native DSD to be detected as true");
+    }
+
+    #[test]
+    fn test_parse_proc_stream0_content_pcm_only() {
+        let stream0_data = r#"
+Generic USB DAC at usb-0000:00:14.0-1, full speed : USB Audio
+
+Playback:
+  Status: Stop
+  Interface 1
+    Altset 1
+    Format: S16_LE
+    Channels: 2
+    Rates: 44100, 48000
+    Bits: 16
+"#;
+        let (name, rates, bits, dsd_native) = parse_proc_stream0_content(stream0_data);
+        assert_eq!(name, Some("Generic USB DAC".to_owned()));
+        assert_eq!(rates, vec![44100, 48000]);
+        assert_eq!(bits, vec![16]);
+        assert!(!dsd_native, "Expected PCM-only DAC to report dsd_native as false");
     }
 }
