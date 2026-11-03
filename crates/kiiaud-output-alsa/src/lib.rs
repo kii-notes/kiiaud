@@ -610,12 +610,11 @@ pub fn detect_hardware_capabilities(device: &str, bit_perfect_cfg: bool) -> Outp
         (None, Vec::new(), Vec::new(), false)
     };
 
-    let device_name = dev_name.unwrap_or_else(|| {
-        card_id
-            .as_deref()
-            .and_then(lookup_card_name_from_cards)
-            .unwrap_or_else(|| device.to_owned())
-    });
+    let device_name = card_id
+        .as_deref()
+        .and_then(lookup_card_name_from_cards)
+        .or(dev_name)
+        .unwrap_or_else(|| device.to_owned());
 
     let standard_rates = [
         44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000,
@@ -785,13 +784,30 @@ pub fn parse_proc_stream0_content(text: &str) -> (Option<String>, Vec<u32>, Vec<
 
 pub fn lookup_card_name_from_cards(card_id: &str) -> Option<String> {
     let text = std::fs::read_to_string("/proc/asound/cards").ok()?;
+    lookup_card_name_from_cards_content(card_id, &text)
+}
+
+pub fn lookup_card_name_from_cards_content(card_id: &str, text: &str) -> Option<String> {
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
         if trimmed.contains(&format!("[{card_id}")) || trimmed.starts_with(&format!("{card_id} ["))
         {
+            // ALSA card line format: "card_num [card_id ]: driver_name - short_product_name"
+            // Example: " 7 [AUDIO          ]: USB-Audio - USB HIFI AUDIO"
+            if let Some((_, short_desc)) = trimmed.split_once(" - ") {
+                let clean = short_desc.trim();
+                if !clean.is_empty() {
+                    return Some(clean.to_owned());
+                }
+            }
             if let Some(desc_line) = lines.next() {
-                return Some(desc_line.trim().to_owned());
+                let dev_name = if let Some((n, _)) = desc_line.trim().split_once(" at usb-") {
+                    n.trim().to_owned()
+                } else {
+                    desc_line.trim().to_owned()
+                };
+                return Some(dev_name);
             }
         }
     }
@@ -1040,5 +1056,29 @@ Playback:
         assert_eq!(rates, vec![44100, 48000]);
         assert_eq!(bits, vec![16]);
         assert!(!dsd_native, "Expected PCM-only DAC to report dsd_native as false");
+    }
+
+    #[test]
+    fn test_lookup_card_name_from_cards_content() {
+        let cards_content = r#"
+ 0 [vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0
+                      vc4-hdmi-0
+ 1 [vc4hdmi1       ]: vc4-hdmi - vc4-hdmi-1
+                      vc4-hdmi-1
+ 7 [AUDIO          ]: USB-Audio - USB HIFI AUDIO
+                      SXW Tech USB HIFI AUDIO at usb-xhci-hcd.0-1, high speed
+"#;
+        assert_eq!(
+            lookup_card_name_from_cards_content("AUDIO", cards_content),
+            Some("USB HIFI AUDIO".to_owned())
+        );
+        assert_eq!(
+            lookup_card_name_from_cards_content("7", cards_content),
+            Some("USB HIFI AUDIO".to_owned())
+        );
+        assert_eq!(
+            lookup_card_name_from_cards_content("vc4hdmi0", cards_content),
+            Some("vc4-hdmi-0".to_owned())
+        );
     }
 }
