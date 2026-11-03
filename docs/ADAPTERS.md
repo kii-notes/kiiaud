@@ -44,8 +44,9 @@ Allows `kiiaud` to act as an audiophile-grade Squeezebox endpoint (analogous to 
 
 ### Workflow & Protocol (SlimProto)
 1. **Discovery & Hello (`HELO`)**:
-   - Connects to LMS on port 3483.
-   - Sends a `HELO` packet advertising capabilities: MAC address, supported formats (FLAC, PCM, DSD/DoP), buffer sizes, and flags (`CanHTTPS=1,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1,ModelName={player_name}`).
+   - Connects to LMS on port 3483 (or over the Gateway WSS tunnel).
+   - Sends a `HELO` packet advertising capabilities: MAC address, supported formats, buffer sizes, and flags (`CanHTTPS=1,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1,ModelName={player_name}`).
+   - **DSD-First Format Ordering**: When the active output backend supports DSD, format capabilities are ordered with DSD formats first (`dsf,dff,flc,mp3,pcm,...`). This ensures LMS does not transcode DSF/DFF tracks to PCM when serving audio to `kiiaud`, delivering bit-perfect native DSD streams directly.
 2. **Stream Command (`strm`) & Response Protocol**:
    - LMS commands the player to start streaming a track:
      - `strm-s`: Start streaming audio data over an HTTP or raw TCP connection from LMS. The adapter immediately acknowledges with `STMf` (flush), `STMc` (connected), and a `RESP` frame containing HTTP 200 headers to clear the server's `connecting` lock.

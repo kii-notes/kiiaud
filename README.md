@@ -10,7 +10,7 @@ The daemon is an **Audio Playback Endpoint / Renderer**, not a music server.
 
 The central design principle is:
 
-> A controller or stream source tells `kiiaud` what to play. `kiiaud` does not need to manage a music library database. It accepts local audio files or direct remote stream URLs and renders them to ALSA hardware on Linux, WASAPI Exclusive Mode on Windows, or Oboe/AAudio on Android with dynamic capability reporting.
+> A controller or stream source tells `kiiaud` what to play. `kiiaud` does not need to manage a music library database. It accepts local audio files or direct remote stream URLs and renders them to ALSA hardware on Linux, ASIO / WASAPI Exclusive on Windows, or direct UAC1/UAC2 USB / AAudio on Android with dynamic capability reporting.
 
 Controllers and stream sources may include:
 - **Hi-Fi WebUI**: Embedded browser-based control dashboard and signal path monitor on port `7110`;
@@ -55,14 +55,15 @@ Local filesystems or remote servers (Jellyfin, LMS) remain the source of truth f
                              │  Decoders (WavPack, │
                              │   FLAC, DSF, DFF...)│
                              │  PCM / DSD Pipeline │
+                             │  Service & Tray Mgt │
                              └──────────┬──────────┘
                                         │
                                         ▼
                              ┌────────────────────────┐
                              │   Output Abstraction   │
                              │  (ALSA on Linux,       │
-                             │   WASAPI on Windows,   │
-                             │   Oboe on Android,     │
+                             │   ASIO/WASAPI on Win,  │
+                             │   UAC1/UAC2 on Android,│
                              │   Native DSD / DoP)    │
                              └──────────┬─────────────┘
                                         │
@@ -78,12 +79,16 @@ Jellyfin, LMS (Lyrion), MPD, WebUI, and CLI are modular protocol and source adap
 ## 4. Key properties
 
 - **Rust implementation**: Memory-safe, high concurrency, zero-cost abstractions.
-- **Cross-platform & Headless**: Engineered for Linux headless appliances (Raspberry Pi OS, Armbian, Alpine), Windows audiophile systems, and Android endpoints (TV Boxes, tablets, phones).
+- **Cross-platform & Headless**: Engineered for Linux headless appliances (Raspberry Pi OS, Armbian, Alpine), Windows audiophile workstations, and Android endpoints (TV Boxes, tablets, phones).
 - **Capability-driven audio output & Bit-perfect path**:
   - **Linux**: ALSA hardware direct (`hw:`), avoiding `dmix`, software resampling, normalization, or software volume DSP.
-  - **Windows**: WASAPI Exclusive Mode (`AUDCLNT_SHAREMODE_EXCLUSIVE`) with MMCSS Pro Audio scheduling, and ASIO (`kiiaud-output-asio`) for direct hardware streaming with **Native 1-bit DSD** (DSD64 to DSD1024) support.
-  - **Android**: Oboe / AAudio (`kiiaud-output-android`) with capability negotiation (Exclusive mode vs Shared mixer, dynamic sample rates, and DoP).
+  - **Windows**: ASIO (`kiiaud-output-asio`) for direct hardware streaming with **Native 1-bit DSD** (DSD64 to DSD1024) support, and WASAPI Exclusive Mode (`AUDCLNT_SHAREMODE_EXCLUSIVE`) with MMCSS Pro Audio scheduling.
+  - **Android**: Dedicated **Pure Rust Direct USB Audio driver** (`android-usb` backend) bypassing AudioFlinger, AAudio, and kernel ALSA drivers via Linux `usbdevfs` ioctl for true bit-perfect UAC1/UAC2 streaming, plus Oboe / AAudio fallback (`oboe` / `android`).
   - **Bit-perfect Capability Reporting**: Signal path state and WebUI accurately report whether playback is direct bit-perfect or operating via a shared mixer.
+- **Service & Desktop Integration**:
+  - **Built-in Service Management**: Single command `kiiaud --service install/start/stop/status/uninstall`. On Windows, registers an auto-starting user logon task via Task Scheduler (`schtasks.exe`), providing full access to audio DACs and ASIO drivers (which ordinary Windows Service Session 0 lacks). On Linux, registers a systemd user unit (`systemctl --user`).
+  - **Windows System Tray & Background Mode**: Headless console execution (`--background`) with a notification area tray icon (`--tray`), real-time DAC status tooltip, console show/hide toggle, and one-click WebUI launcher.
+  - **Single-Instance Guard**: Guarantees only one instance accesses the DAC at a time using Named Windows Mutex (`Local\kiiaud_single_instance_{name}`) and Unix file locks (`flock`).
 - **First-class DSD support**: Native DSD (Direct Stream Digital) and DoP (DSD over PCM). Never converts DSD to PCM silently.
 - **Audio format coverage**:
   - **WavPack (`.wv`)**: First-class priority for both **WavPack DSD** (lossless compression of DSF/DFF) and WavPack PCM.
@@ -93,9 +98,10 @@ Jellyfin, LMS (Lyrion), MPD, WebUI, and CLI are modular protocol and source adap
 - **Multi-Adapter Support**:
   - **WebUI & REST/SSE (`kiiaud-adapter-web`)**: Embedded Hi-Fi dashboard on port 7110 for real-time signal path inspection, live adapter hot-reloading, and playback controls.
   - **Jellyfin**: "Play To" client (WebSocket remote control + REST progress reports).
-  - **LMS (Lyrion Music Server & Lyrion Anywhere Gateway)**: SlimProto client supporting both direct LAN (`DirectTcp`) and remote HTTPS/WSS gateway tunneling (`AnywhereWs`, Protocol v2) with interactive WebUI pairing/login and bit-perfect `original` stream passthrough.
+  - **LMS (Lyrion Music Server & Lyrion Anywhere Gateway)**: SlimProto client supporting both direct LAN (`DirectTcp`) and remote HTTPS/WSS gateway tunneling (`AnywhereWs`, Protocol v2) with interactive WebUI pairing/login, DSD-first capability negotiation, and bit-perfect `original` stream passthrough.
   - **MPD**: Lightweight control protocol for standard MPD clients without needing an MPD database.
   - **CLI & Local IPC**: Cross-platform control (`kiiaudctl`) via Unix domain sockets on Linux and local loopback TCP on Windows.
+- **Native Android Companion App (`android/`)**: Lightweight Kotlin application managing USB permissions, USB DAC hot-plugging, wake locks, and foreground audio service.
 - **Database-free & Minimal Storage I/O**: Zero database transactions during playback; protects SD cards on embedded hardware.
 - **In-memory Runtime Queue**: Queue and player state reside purely in memory.
 - **Gapless Playback**: Pre-buffering track transitions to eliminate gaps between contiguous tracks.
@@ -138,26 +144,55 @@ Detailed specifications and architecture documents are organized in [`docs/`](do
 - [Design Decisions](docs/DESIGN-DECISIONS.md)
 - [Implementation Plan](docs/IMPLEMENTATION-PLAN.md)
 - [Adapter Specifications (WebUI, MPD, Jellyfin, LMS, CLI)](docs/ADAPTERS.md)
+- [Android Direct USB Audio (Pure Rust UAC1 + UAC2 Bit-Perfect)](docs/android-usb-audio.md)
+- [LMS / SlimProto Troubleshooting & Sequence Analysis](docs/TROUBLESHOOTING-LMS.md)
+- [MPD User Guide & Playlist Operations](docs/USER-GUIDE-MPD.md)
 
-## 8. Build & Quick Installation
+## 8. Build, Service & Quick Usage
+
+### Pre-built Binaries (GitHub Releases)
+Automated GitHub Actions CI/CD publishes multi-arch packages for every release:
+- **Linux x86_64**: `kiiaud-<version>-linux-x86_64.tar.gz`
+- **Linux ARM64**: `kiiaud-<version>-linux-arm64.tar.gz` (Raspberry Pi 4/5, Armbian, Radxa)
+- **Windows x86_64**: `kiiaud-<version>-windows-x86_64.zip` (MSVC build with ASIO, WASAPI & System Tray)
+- **Android ARM64**: `kiiaud-<version>-android-arm64.tar.gz` (`aarch64-linux-android`) & Android companion APK
 
 ### Local Build
 ```bash
+# Standard host build:
 cargo build --release
+
+# Android UAC cdylib:
+cargo build --target aarch64-linux-android --release -p kiiaud-output-android
 ```
 
-### Install for Current User (`~/.local/bin`):
+### Built-in Background Service Management
+`kiiaud` includes native service lifecycle commands for both Linux and Windows:
+
 ```bash
-make install-user
-# Creates ~/.config/kiiaud/config.toml if not present
-# Installs systemd user unit to ~/.config/systemd/user/kiiaud.service
+# Install auto-starting background service:
+# - On Windows: Registers a user logon task via Task Scheduler (guarantees ASIO & WASAPI DAC access)
+# - On Linux: Registers a systemd user unit (~/.config/systemd/user/kiiaud.service)
+kiiaud --service install
+
+# Check status:
+kiiaud --service status
+
+# Start or stop service:
+kiiaud --service start
+kiiaud --service stop
+
+# Uninstall service:
+kiiaud --service uninstall
 ```
 
-### Install System-wide (`/usr/local/bin`):
+### Windows Background Mode & System Tray
 ```bash
-sudo make install-system
-# Installs to /usr/local/bin and /etc/kiiaud/config.toml
-# Installs systemd system unit to /etc/systemd/system/kiiaud.service
+# Run headless in background with system tray notification icon:
+kiiaud --background --tray
+
+# Or disable system tray if running purely headless:
+kiiaud --background --tray false
 ```
 
 ### Configuration & Quick Usage
@@ -173,6 +208,9 @@ kiiaud -b asio -d "SXW UAD ASIO" --dsd-mode auto
 
 # Inspect DAC hardware capabilities and registered ASIO drivers:
 kiiaud -b asio --dac-info
+
+# Run on Android with Pure Rust Direct USB UAC2 driver (bypassing AudioFlinger):
+kiiaud -b android-usb -d fd:42
 
 # Connect remotely to a Lyrion Anywhere Gateway with a one-time pairing code (Bit-Perfect Passthrough):
 kiiaud --lms --lms-gateway "https://music.example.com" --lms-pair-code "ABCDEFGHJK" --lms-quality original

@@ -92,3 +92,33 @@ While `kiiaud` remains headless and database-free (D-001, D-002), users require 
 - **Real-Time Server-Sent Events (`/api/events`)**: Connects directly to the internal Tokio broadcast channel for `PlaybackEvent`s. When track positions change, tracks advance, or volume changes occur, events stream instantaneously to the browser with zero HTTP polling overhead.
 - **Audiophile Signal Path Inspection**: Exposes the complete signal path in real time (`Source -> Decoder -> Bit-Perfect Pipeline -> Output Hardware`), proving bit-perfect passthrough without hidden resampling.
 - **Zero-Database Filesystem Browsing (`/api/browse`)**: Allows users to navigate local directory trees and enqueue files on demand without background filesystem scanning or database persistence.
+
+## D-019 — Windows ASIO 2.3 Driver Output with Native 1-bit DSD (DSD64 to DSD1024)
+While WASAPI Exclusive Mode delivers bit-perfect PCM and DoP, audiophiles with high-rate DSD recordings (DSD128, DSD256, DSD512, DSD1024) face bandwidth and driver limits with DoP framing. `kiiaud-output-asio` implements the Steinberg ASIO 2.3 specification:
+- Bypasses the entire Windows audio stack.
+- Auto-discovers driver CLSIDs registered under `HKLM\SOFTWARE\ASIO`.
+- Streams raw 1-bit DSD directly (`kAsioSetIoFormat`, `ASIOSTDSDInt8LSB1`/`MSB1`) with zero conversion overhead, falling back to DoP when native DSD is unsupported by the driver.
+
+## D-020 — Pure Rust UAC1 + UAC2 USB Audio Driver for Android (`android-usb`)
+Android's standard audio architecture forces sample rate conversion (to 48 kHz or Samsung UHQA 384 kHz) and passes audio through `AudioFlinger` floating-point mixers. `kiiaud` provides a dedicated direct USB backend:
+- Directly programs USB endpoints via Linux `usbdevfs` ioctls using an open file descriptor from Android's `UsbManager`.
+- Eliminates `AudioFlinger`, `AudioTrack`, `AAudio`, `Oboe`, and the kernel's `snd-usb-audio` driver from the data path.
+- Supports both UAC2 (High Speed, up to 32-bit/768kHz, Native DSD/DoP, auto clock source detection) and UAC1 (Full Speed, 24-bit/96kHz for vintage DACs).
+- Implements an 80-URB continuous isochronous pipeline with asynchronous clock feedback tracking (Q16.16) to prevent jitter and micro-buffer clicks.
+
+## D-021 — Interactive User Logon Service Management on Windows via Task Scheduler
+Standard Windows Services run in `Session 0`. Since Windows Vista, Session 0 processes are strictly prohibited from opening audio endpoints, accessing WASAPI Exclusive sessions, or initializing ASIO COM drivers.
+- Instead of traditional `sc.exe` services, `kiiaud --service install` installs an auto-starting interactive task in Windows Task Scheduler (`schtasks.exe /SC ONLOGON /RL LIMITED`).
+- This guarantees `kiiaud` executes within the user's interactive session with full permissions to external USB DACs, ASIO drivers, and GUI components.
+- On Linux, it installs a systemd user unit (`systemctl --user`).
+
+## D-022 — Single-Instance Guard & Desktop Integration (System Tray)
+To prevent two daemon processes from conflicting over the same exclusive USB DAC:
+- `SingleInstanceGuard` uses a Named Mutex on Windows (`Local\kiiaud_single_instance_{name}`) and Unix `flock` on Linux.
+- Windows desktop users can run headless with `--background --tray`, providing a system tray notification icon with real-time status and console toggling.
+
+## D-023 — Lyrion Anywhere Gateway & DSD-First HELO Negotiation
+To stream over the public Internet securely without port forwarding, `kiiaud-adapter-lms` tunnels SlimProto over WebSocket (`AnywhereWs`) to a Lyrion Anywhere Gateway. To prevent the server from transcoding DSD tracks to PCM, format capabilities in the `HELO` packet prioritize DSD (`dsf,dff,...`) before PCM when the active DAC supports DSD.
+
+## D-024 — Multi-Architecture Packaging & CI/CD Release Automation
+Automated GitHub Actions workflows package ready-to-run releases across 4 architectures: Linux x86_64, Linux ARM64 (Raspberry Pi), Windows x86_64 (MSVC), and Android ARM64 (`aarch64-linux-android`), complete with SHA-256 verification hashes.

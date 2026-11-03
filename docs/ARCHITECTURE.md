@@ -7,6 +7,7 @@ Recommended Rust workspace crate structure:
 ```text
 kiiaud/
 ├── Cargo.toml
+├── android/                      # Native Android Kotlin companion app (KiiaudService, UsbDacManager)
 ├── crates/
 │   ├── kiiaud-core/              # Domain models, commands, events, AudioSource trait
 │   ├── kiiaud-playback/          # Playback engine, in-memory queue, buffering state machine
@@ -15,13 +16,13 @@ kiiaud/
 │   │   ├── kiiaud-output-alsa/   # ALSA hardware direct output for Linux (Bit-perfect, Native DSD, DoP)
 │   │   ├── kiiaud-output-wasapi/ # WASAPI Exclusive Mode output for Windows (Bit-perfect, DoP, MMCSS)
 │   │   ├── kiiaud-output-asio/   # Steinberg ASIO 2.3 output for Windows (Bit-perfect, Native 1-bit DSD to DSD1024, DoP)
-│   │   └── kiiaud-output-android/# Android output via Oboe / AAudio (Capability-driven, Exclusive/Shared, DoP)
+│   │   └── kiiaud-output-android/# Pure Rust UAC1/UAC2 direct USB driver (`android-usb`), Oboe fallback & Android JNI bridge
 │   ├── kiiaud-adapter-jellyfin/  # Jellyfin "Play To" remote control adapter (WebSocket + REST)
-│   ├── kiiaud-adapter-lms/       # LMS / Lyrion SlimProto client adapter (Squeezelite-like)
+│   ├── kiiaud-adapter-lms/       # LMS / Lyrion SlimProto & Lyrion Anywhere Gateway adapter
 │   ├── kiiaud-adapter-mpd/       # MPD text protocol control adapter
 │   ├── kiiaud-adapter-cli/       # Local CLI / IPC control client (Unix socket / Windows TCP)
 │   ├── kiiaud-adapter-web/       # Embedded Hi-Fi WebUI & REST/SSE status adapter
-│   └── kiiaud/                   # Main daemon binary, configuration loader & adapter coordinator
+│   └── kiiaud/                   # Main daemon binary, configuration, single-instance guard, service & tray management
 ├── docs/
 └── tests/
 ```
@@ -182,7 +183,8 @@ pub trait AudioOutput: Send {
 - **ALSA Hardware Direct (`kiiaud-output-alsa`)**: The primary production output for Linux/RPi 5.
 - **WASAPI Exclusive Mode (`kiiaud-output-wasapi`)**: Bit-perfect production output for Windows (bypasses Windows Audio Engine, event-driven streaming, MMCSS "Pro Audio", DoP for DSD).
 - **ASIO Hardware Direct (`kiiaud-output-asio`)**: Bit-perfect production output for Windows with **Native 1-bit DSD (DSD64 to DSD1024)** support, double-buffered zero-jitter streaming, and automatic Registry driver discovery.
-- **Android Oboe / AAudio (`kiiaud-output-android`)**: Native Android output backend leveraging Google's Oboe library. Supports capability negotiation (Exclusive mode vs Shared mixer, dynamic sample rates, and DoP streaming).
+- **Pure Rust Direct USB Driver (`android-usb`)**: Bit-perfect direct USB driver for Android (UAC1 and UAC2) writing isochronous transfers directly over Linux `usbdevfs` ioctl, completely bypassing Android AudioFlinger, AAudio, and kernel ALSA drivers.
+- **Android Oboe / AAudio (`android` / `oboe`)**: General Android output backend leveraging Google's Oboe library with capability negotiation (Exclusive mode vs Shared mixer, dynamic sample rates, and DoP streaming).
 - **Mock/Sink Output**: Used for unit tests and local development across platforms.
 - **Extensibility**: Future backends (e.g. macOS CoreAudio, PipeWire) can be added without modifying the engine or decoders.
 
@@ -213,14 +215,20 @@ In `kiiaud`, **bit-perfect playback is treated as a capability of the output bac
 - **Double-Buffered Asynchronous Streaming**: Push-to-pull ring buffer architecture synchronized with ASIO hardware buffer switch callbacks (`bufferSwitch` / `bufferSwitchTimeInfo`).
 - **Comprehensive PCM Formats**: Supports `Int16LSB`, packed `Int24LSB`, `Int32LSB`, `Int32LSB24`, and `Float32LSB` at sample rates from 44.1kHz up to 768kHz.
 
-### 9.4 Android Oboe / AAudio Pipeline (`kiiaud-output-android`)
-- **Oboe / AAudio HAL**: Leverages AAudio (Android 8.1+) with fallback to OpenSL ES for low-latency streaming to USB DACs or internal audio hardware.
-- **Push-to-Pull Bridge**: An internal lock-free ring buffer bridges the playback engine's synchronous `write()` thread to Oboe's asynchronous real-time audio callback thread.
-- **Exclusive vs Shared Mode**: If configured for `bit_perfect = true`, requests `SharingMode::Exclusive` and `PerformanceMode::LowLatency`. If the Android device or HAL permits exclusive access (e.g. specialized Android DAP or USB DAC direct path), bit-perfect is maintained. If the HAL falls back to `SharingMode::Shared`, capability reporting flags `bit_perfect = false` and signals that the stream is routed through the system mixer.
+### 9.4 Pure Rust Direct USB UAC1 + UAC2 Pipeline (`android-usb`) (Android)
+- **Direct Hardware Access**: Bypasses `AudioFlinger`, `AudioTrack`, `AAudio`, `Oboe`, and the kernel's `snd-usb-audio` driver entirely.
+- **Isochronous URB Ring Buffer**: Maintains an 80-URB continuous queue (~80ms pipeline) with `USBDEVFS_URB_ISO_ASAP` microframe scheduling (125µs per UAC2 microframe), providing smooth streaming without micro-gaps.
+- **Dual Class Support**:
+  - **UAC2**: USB 2.0 High Speed, up to 32-bit/768kHz, Native DSD, and DoP. Auto-detects `CLOCK_SOURCE` entity IDs and sets hardware PLL clock rates via `SET_CUR` control transfers.
+  - **UAC1**: USB 1.1 Full Speed, up to 24-bit/96kHz, for vintage DACs and broad Android 5.0+ compatibility.
+- **Continuous Async Clock Feedback**: Reads isochronous feedback endpoint (Q16.16 format) to dynamically adjust frames per microframe (`calibrated_fpmf`), preventing clock drift and buffer clicks.
+- **Companion Integration**: Receives allocated USB device file descriptor (`fd:XX`) directly from the companion Android app's `UsbManager`.
+
+### 9.5 Android Oboe / AAudio Pipeline (`android` / `oboe`)
+- **Oboe / AAudio HAL**: Leverages AAudio (Android 8.1+) with fallback to OpenSL ES for streaming to internal audio hardware or generic endpoints.
+- **Push-to-Pull Bridge**: Lock-free ring buffer bridges the playback engine's synchronous `write()` thread to Oboe's asynchronous real-time audio callback thread.
+- **Exclusive vs Shared Mode**: If configured for `bit_perfect = true`, requests `SharingMode::Exclusive` and `PerformanceMode::LowLatency`. If the HAL falls back to `SharingMode::Shared`, capability reporting flags `bit_perfect = false` and signals that the stream is routed through the system mixer.
 - **DoP for DSD**: Converts DSF, DFF, and WavPack DSD tracks to DoP frames for bit-perfect transmission over PCM.
-- **Two-Phase Architecture**:
-  1. *Phase 1 — Native Daemon*: Binary built for `aarch64-linux-android`, runnable headless via ADB or Termux (ideal for Android TV Boxes as dedicated music endpoints).
-  2. *Phase 2 — Android Foreground Service*: Thin wrapper app holding `WakeLock`/`WifiLock` and exposing the WebUI/APIs.
 
 ---
 
@@ -232,7 +240,8 @@ DSF / DFF / WavPack DSD (.wv)
    │
    ├── Native DSD mode:
    │   ├── Linux ALSA: SND_PCM_FORMAT_DSD_U32_BE / LE (Direct USB/I2S)
-   │   └── Windows ASIO: ASIOSTDSDInt8LSB1 / ASIOSTDSDInt8MSB1 (DSD64 to DSD1024)
+   │   ├── Windows ASIO: ASIOSTDSDInt8LSB1 / ASIOSTDSDInt8MSB1 (DSD64 to DSD1024)
+   │   └── Android USB: Native DSD via UAC2 raw bitstream packing
    │
    └── DoP mode (DSD over PCM):
        └── Packed into 24/32-bit PCM frames (16-bit DSD + 8-bit 0x05/0xFA markers)
@@ -274,6 +283,7 @@ All adapters are modular frontends that communicate with the core engine via cha
 - Acts as a modern, lightweight Rust counterpart to `squeezelite` with dual-mode transport (`DirectTcp` and `AnywhereWs`) hot-reloadable at runtime.
 - **`DirectTcp` (LAN)**: Connects directly to LMS via SlimProto (TCP port 3483) and streams over HTTP (port 9000).
 - **`AnywhereWs` (Remote Internet via [Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere))**: Tunnels binary SlimProto over `WSS /v1/player` (Protocol v2), adopts the Gateway-assigned device MAC & name, fetches audio from `GET /v1/stream/<session>/<seq>` (`quality = "original"` bit-perfect passthrough or `"high"`/`"low"` Opus), and sends byte acknowledgements (`{"ack":...}`) every 256 KiB to advance the Gateway's 4 MiB replay buffer.
+- **DSD-First HELO Capability Ordering**: When connected to a DAC supporting DSD, kiiaud advertises format capabilities with DSD formats first (`dsf,dff,flc,mp3,pcm,...`) in the SlimProto `HELO` frame. This prevents LMS from prematurely transcoding DSF/DFF tracks into PCM, ensuring bit-perfect native DSD delivery.
 - Supports interactive pairing (`lyrion-anywhere://pair?...` / 10-char code) and login (+ TOTP) directly from the embedded WebUI (`/api/lms/gateway-auth`), with automatic 10-minute access token refresh and persistent refresh token rotation.
 
 ### 11.3 MPD Protocol Adapter
@@ -352,3 +362,32 @@ player_name = "kiiaud Squeezebox"
 enabled = true
 listen = "0.0.0.0:6600"
 ```
+
+---
+
+## 15. Process Lifecycle, Desktop & Service Management
+
+### 15.1 Single-Instance Enforcement (`SingleInstanceGuard`)
+To protect dedicated audiophile audio endpoints and hardware DACs from race conditions or socket collisions:
+- **Windows**: Utilizes a system-wide Named Mutex (`Local\kiiaud_single_instance_{daemon_name}`). If `GetLastError() == ERROR_ALREADY_EXISTS`, the second process aborts immediately with an actionable warning.
+- **Linux / Unix**: Utilizes a non-blocking advisory file lock (`flock(fd, LOCK_EX | LOCK_NB)`) on `/tmp/kiiaud_{daemon_name}.lock` (or `$XDG_RUNTIME_DIR/kiiaud_{daemon_name}.lock`).
+- **Bypass**: Can be explicitly overridden with `--allow-multiple-instances` when testing multiple mock endpoints concurrently.
+
+### 15.2 Cross-Platform Background Service Management (`--service`)
+`kiiaud` provides integrated CLI commands to manage its lifecycle without external script tooling:
+- **Windows Task Scheduler Integration (`schtasks.exe`)**:
+  - *The Session 0 Problem*: Traditional Windows Services run in isolated `Session 0`. Windows strictly forbids Session 0 processes from accessing audio hardware endpoints, WASAPI Exclusive sessions, or user-space ASIO COM drivers.
+  - *Solution*: `kiiaud --service install` automatically registers an interactive user logon task (`/SC ONLOGON /RL LIMITED /DELAY 0000:05`) using the current user's security token. This gives `kiiaud` full hardware access to external USB DACs, ASIO drivers, and desktop notifications.
+- **Linux systemd User Integration (`systemctl --user`)**:
+  - Automatically writes and enables `~/.config/systemd/user/kiiaud.service`, operating cleanly within the desktop/audio user session.
+- **Unified Actions**: `kiiaud --service install | uninstall | start | stop | status` provides identical syntax across Windows and Linux.
+
+### 15.3 Windows System Tray & Headless Execution
+- **Background Mode (`--background`)**: Hides the command terminal console (`GetConsoleWindow` + `ShowWindow(con, SW_HIDE)`) to run completely unobtrusively.
+- **Notification Tray Icon (`--tray`)**: Creates a Win32 message-only window and registers a notification icon (`NOTIFYICONDATAW`) in the Windows taskbar system tray.
+- **Interactive Tray Menu**:
+  - Real-time engine status (Playback state, active sample rate/DSD mode, DAC device name & backend).
+  - One-click WebUI launcher (`Open WebUI`).
+  - Terminal Console toggle (`Show/Hide Console Window`).
+  - Clean daemon shutdown (`Exit kiiaud`).
+  - Left-click or double-click opens the WebUI directly in the default browser.

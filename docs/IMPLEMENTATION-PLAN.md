@@ -101,17 +101,82 @@ Each adapter is an independent, optional crate.
 
 ---
 
-## Definition of Done for MVP
+## Phase 8 — Windows WASAPI Exclusive Mode & Loopback IPC
+- Implement `kiiaud-output-wasapi` using `AUDCLNT_SHAREMODE_EXCLUSIVE` and MMCSS Pro Audio scheduling.
+- Support event-driven streaming (`AUDCLNT_STREAMFLAGS_EVENTCALLBACK`) with zero jitter.
+- Implement DoP v1.1 framing for DSD bitstreams over WASAPI Exclusive PCM frames.
+- Adapt local IPC on Windows to loopback TCP (`127.0.0.1:7111`).
+
+---
+
+## Phase 9 — Steinberg ASIO 2.3 Output & Native 1-bit DSD
+- Implement `kiiaud-output-asio` with COM FFI bindings to the Steinberg ASIO 2.3 driver interface.
+- Scan Windows Registry (`HKLM\SOFTWARE\ASIO`) for automatic driver discovery and resolution.
+- Support **Native 1-bit DSD** from DSD64 up to DSD1024 (`kAsioSetIoFormat`, `ASIOSTDSDInt8LSB1` / `MSB1`).
+- Fallback to DoP v1.1 automatically if the ASIO driver lacks native DSD support.
+
+---
+
+## Phase 10 — Pure Rust Direct USB Audio Driver & Android Companion App
+- Implement `kiiaud-output-android` direct USB engine bypassing AudioFlinger, AAudio, and kernel `snd-usb-audio`:
+  - Isochronous URB ring buffer (80 URBs) with `USBDEVFS_URB_ISO_ASAP` scheduling.
+  - UAC2 (High Speed, up to 32-bit/768kHz, Native DSD/DoP, clock entity parsing, and hardware PLL control).
+  - UAC1 (Full Speed, up to 24-bit/96kHz) for vintage DAC compatibility.
+  - Continuous asynchronous clock feedback (Q16.16) for drift-free playback.
+- Build lightweight Kotlin companion app (`android/`) with USB DAC detection, permission management, and foreground audio service.
+
+---
+
+## Phase 11 — Lyrion Anywhere Gateway & DSD-First HELO Negotiation
+- Implement remote WebSocket SlimProto tunnel (`AnywhereWs`, Protocol v2) to Lyrion Anywhere Gateway.
+- Implement token authentication, pairing code exchange, and automatic access token refresh.
+- Implement 256 KiB byte-acknowledgement flow control to advance the Gateway's replay buffer.
+- Implement DSD-first capability ordering in SlimProto `HELO` packets to prioritize bit-perfect native DSD over PCM transcoding.
+
+---
+
+## Phase 12 — Embedded Hi-Fi WebUI & Real-Time Signal Path Inspection
+- Implement zero-dependency single-binary web dashboard (`kiiaud-adapter-web`) on port `7110` (`ui.html`).
+- Stream real-time events over Server-Sent Events (`/api/events`) with sub-second latency and zero polling.
+- Expose audiophile signal path inspection (`Source -> Decoder -> DSP -> Output Hardware`).
+- Implement zero-database directory browser (`/api/browse`), hardware DAC scanner, and live configuration editor.
+
+---
+
+## Phase 13 — Service Management, Single-Instance Lock & System Tray
+- Implement built-in `kiiaud --service install | uninstall | start | stop | status`:
+  - Windows: Task Scheduler user logon task (`schtasks.exe`), giving full access to audio DACs and ASIO drivers.
+  - Linux: systemd user service unit (`systemctl --user`).
+- Implement `SingleInstanceGuard` using Named Mutex on Windows and `flock` on Linux.
+- Implement Windows System Tray integration (`--tray`, `--background`) with notification area icon, status tooltips, WebUI launcher, and console show/hide toggle.
+
+---
+
+## Phase 14 — Automated Multi-Architecture CI/CD Release Matrix
+- Build and publish multi-platform releases on tag creation via GitHub Actions:
+  - Linux x86_64 (`.tar.gz`)
+  - Linux ARM64 (`.tar.gz` for Raspberry Pi / TV Boxes)
+  - Windows x86_64 MSVC (`.zip` with ASIO and Tray support)
+  - Android ARM64 (`.tar.gz` and companion APK)
+- Automated SHA-256 checksum generation for release verification.
+
+---
+
+## Definition of Done
 
 ```text
-[ ] kiiaud builds and runs on Linux (Raspberry Pi 5 / ARM64 and x86_64)
-[ ] No database or filesystem scanning is required
-[ ] Local and HTTP stream URLs can be ingested directly
-[ ] WavPack (.wv) PCM and DSD play bit-perfect
-[ ] FLAC, WAV, and DSF play bit-perfect
-[ ] ALSA output operates in bit-perfect mode (Native DSD and DoP verified on USB DAC)
-[ ] At least one remote adapter (Jellyfin or MPD or LMS) operates cleanly
-[ ] Disconnecting a controller does not disrupt active audio playback
-[ ] File errors/bad streams do not crash the daemon
-[ ] systemd service unit runs the daemon as a headless appliance
+[x] kiiaud builds and runs on Linux (Raspberry Pi 5 / ARM64 and x86_64)
+[x] kiiaud builds and runs on Windows (MSVC x86_64 with ASIO, WASAPI, and System Tray)
+[x] kiiaud builds and runs on Android (ARM64 with direct UAC1/UAC2 USB driver and companion app)
+[x] No database or filesystem scanning is required
+[x] Local and HTTP stream URLs can be ingested directly
+[x] WavPack (.wv) PCM and DSD play bit-perfect
+[x] FLAC, WAV, DSF, and DFF play bit-perfect
+[x] ALSA, WASAPI Exclusive, ASIO, and Android USB outputs operate in bit-perfect mode
+[x] Native DSD and DoP operate reliably across all hardware backends
+[x] WebUI, Jellyfin, LMS (Local + Anywhere Gateway), MPD, and CLI adapters operate cleanly
+[x] Disconnecting a controller does not disrupt active audio playback
+[x] File errors/bad streams do not crash the daemon
+[x] Built-in service management installs cleanly on Windows (Task Scheduler) and Linux (systemd)
+[x] Automated CI/CD compiles, formats, tests, and publishes multi-architecture releases
 ```

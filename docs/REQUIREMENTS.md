@@ -83,6 +83,27 @@ The application shall prioritize WavPack (`.wv`) containers for both DSD (WavPac
 ### R-027 — Embedded Hi-Fi WebUI & Real-time SSE
 The application shall provide a zero-dependency, single-binary embedded web dashboard on port `7110` exposing real-time signal path inspection, playback controls, queue management, and directory browsing without persistent database writes.
 
+### R-028 — Windows ASIO 2.3 Driver & Native 1-bit DSD
+The application shall support direct hardware audio output on Windows using Steinberg ASIO 2.3 drivers, supporting **Native 1-bit DSD** bitstreams from DSD64 up to DSD1024 without mandatory DoP conversion, with automatic driver discovery in the Windows Registry.
+
+### R-029 — Android Direct USB Audio (Pure Rust UAC1 + UAC2)
+The application shall provide a dedicated pure Rust direct USB audio backend (`android-usb`) writing isochronous transfers directly over Linux `usbdevfs` ioctls using an allocated USB file descriptor from Android USB Host API, bypassing Android AudioFlinger, AAudio, and kernel ALSA drivers for true bit-perfect playback.
+
+### R-030 — Built-in Background Service Management
+The application shall provide built-in command-line actions (`--service install | uninstall | start | stop | status`) to manage its background execution, leveraging Windows Task Scheduler interactive logon tasks on Windows (to retain access to audio DACs and ASIO drivers) and systemd user services on Linux.
+
+### R-031 — Single-Instance Hardware Guard
+The application shall enforce single-instance mutual exclusion using platform-appropriate synchronization primitives (Named Mutex on Windows, non-blocking `flock` on Linux) to prevent multiple daemon instances from conflicting over hardware DAC endpoints or IPC sockets.
+
+### R-032 — Windows System Tray & Headless Execution
+The application shall support running in the background with hidden terminal console on Windows (`--background`), providing an interactive notification area tray icon (`--tray`) for status monitoring, WebUI launching, console toggling, and clean shutdown.
+
+### R-033 — Lyrion Anywhere Gateway Remote Tunneling
+The application shall support tunneling SlimProto binary commands and audio streaming over WebSocket (`AnywhereWs`) to a remote Lyrion Anywhere Gateway over the Internet with token authentication and byte-acknowledged flow control.
+
+### R-034 — DSD-First Capability Ordering in SlimProto HELO
+When the active DAC supports DSD, the SlimProto adapter shall advertise DSD formats (`dsf,dff`) first in the `HELO` packet to guarantee that the server streams lossless original DSD bitstreams rather than transcoding to PCM.
+
 ---
 
 ## Non-functional requirements

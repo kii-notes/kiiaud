@@ -88,6 +88,9 @@ Cấu hình nhận diện tiến trình daemon và logging.
 | `socket_path` | String (Path) | `"/tmp/kiiaud.sock"` | Đường dẫn Unix Domain Socket phục vụ IPC cho công cụ điều khiển dòng lệnh `kiiaudctl`.<br>*(Khuyến nghị: với user session, có thể đặt vào `/tmp/kiiaud.sock` hoặc `$XDG_RUNTIME_DIR/kiiaud.sock`; với system service đặt vào `/run/kiiaud/kiiaud.sock`)*. |
 | `log_level` | String | `"info"` | Mức độ chi tiết của nhật ký hệ thống. Các giá trị hợp lệ: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"`. Biến môi trường `RUST_LOG` có độ ưu tiên cao hơn giá trị này nếu được thiết lập. |
 
+> [!NOTE]
+> **Single-Instance Guard**: `kiiaud` tự động ngăn chặn việc chạy nhiều tiến trình daemon cùng lúc gây tranh chấp card âm thanh (trên Windows dùng Named Mutex `Local\kiiaud_single_instance_{name}`, trên Linux dùng Unix file lock `flock`). Nếu muốn chạy đồng thời nhiều tiến trình thử nghiệm, sử dụng cờ `--allow-multiple-instances`.
+
 ---
 
 ### 2.2. Section `[output]`
@@ -95,7 +98,7 @@ Cấu hình phần cứng âm thanh và cơ chế phát nhạc Bit-Perfect.
 
 | Tham số | Kiểu | Mặc định | Mô tả |
 | :--- | :--- | :--- | :--- |
-| `backend` | String | `"alsa"` (Linux)<br>`"wasapi"` (Win)<br>`"oboe"` (Android) | Backend xuất âm thanh. Các giá trị hợp lệ:<br>- `"alsa"`: Giao tiếp ALSA hardware-direct trên Linux (bypass hoàn toàn PulseAudio/PipeWire mixer).<br>- `"wasapi"`: Windows Audio Session API (chạy Exclusive Mode, MMCSS Pro Audio, hỗ trợ PCM & DoP).<br>- `"asio"`: Windows ASIO driver transport (giao tiếp trực tiếp phần cứng, hỗ trợ **Native 1-bit DSD** từ DSD64 đến DSD1024 và Bit-perfect PCM).<br>- `"android"` hoặc `"oboe"`: AAudio/AudioTrack direct trên Android.<br>- `"mock"` hoặc `"null"`: Dummy backend phục vụ test/CI không cần DAC. |
+| `backend` | String | `"alsa"` (Linux)<br>`"wasapi"` (Win)<br>`"oboe"` (Android) | Backend xuất âm thanh. Các giá trị hợp lệ:<br>- `"alsa"`: Giao tiếp ALSA hardware-direct trên Linux (bypass hoàn toàn PulseAudio/PipeWire mixer).<br>- `"wasapi"`: Windows Audio Session API (chạy Exclusive Mode, MMCSS Pro Audio, hỗ trợ PCM & DoP).<br>- `"asio"`: Windows ASIO driver transport (giao tiếp trực tiếp phần cứng, hỗ trợ **Native 1-bit DSD** từ DSD64 đến DSD1024 và Bit-perfect PCM).<br>- `"android-usb"`: Driver USB UAC1/UAC2 thuần Rust chạy trực tiếp trên Android qua Linux `usbdevfs` ioctl, bypass hoàn toàn AudioFlinger, AAudio và kernel ALSA driver.<br>- `"android"` hoặc `"oboe"`: AAudio/AudioTrack direct trên Android.<br>- `"mock"` hoặc `"null"`: Dummy backend phục vụ test/CI không cần DAC. |
 | `device` | String | `"hw:CARD=Audio,DEV=0"` | Định danh thiết bị xuất phần cứng.<br>- Trên Linux ALSA: Dùng cú pháp `hw:CARD=<TênCard>,DEV=0` hoặc `hw:<IndexCard>,<IndexDev>`. Xem danh sách card qua lệnh `aplay -l`.<br>- Trên Windows WASAPI: Tên chuỗi con của DAC (vd `"DAC"`) hoặc `"default"`.<br>- Trên Windows ASIO: Tên hoặc chuỗi con của ASIO driver (không phân biệt hoa thường, ví dụ: `"SXW UAD ASIO"`, `"Bravo-HD"`, `"Focusrite"`, `"UAD"`) hoặc `"default"` để tự động chọn driver ASIO đầu tiên tìm thấy trong Windows Registry (`HKLM\SOFTWARE\ASIO`). |
 | `bit_perfect` | Boolean | `true` | **Cực kỳ quan trọng**: Khi bật (`true`), kiiaud vô hiệu hóa hoàn toàn mọi thuật toán DSP phần mềm (không resample, không đổi bit depth, không chỉnh volume số làm tròn bit). DAC luôn được cấu hình đúng tần số lấy mẫu gốc của file âm thanh (từ 44.1kHz đến 768kHz, DSD64-DSD1024). Với backend ASIO, chế độ luôn là direct hardware stream. |
 | `dsd_mode` | String | `"auto"` | Cơ chế truyền tải tín hiệu DSD (Direct Stream Digital):<br>- `"auto"`: Tự động tối ưu. Trên Linux ALSA: Thử Native DSD trước (`DSD_U32_BE`/`LE`). Trên Windows ASIO: Thử Steinberg ASIO 2.0+ Native DSD (`kAsioSetIoFormat`, `ASIOSTDSDInt8LSB1`/`MSB1`). Nếu driver/DAC không hỗ trợ Native DSD, tự động fallback sang DoP (DSD over PCM). Tuyệt đối không convert DSD sang PCM.<br>- `"native"`: Bắt buộc dùng Native 1-bit DSD (hỗ trợ tới DSD1024 trên ASIO/ALSA). Nếu driver/DAC không hỗ trợ sẽ báo lỗi.<br>- `"dop"`: Đóng gói các bit DSD vào khung PCM 24/32-bit theo chuẩn DoP v1.1. |
@@ -384,8 +387,17 @@ Hệ thống tham số dòng lệnh của `kiiaud` được thiết kế đầy 
 | **Daemon Options** | `--name <NAME>` | String (`"kiiaud-rpi5"`) | `[daemon].name` |
 | | `--socket-path <PATH>` | Path (`"/tmp/kiiaud.sock"`) | `[daemon].socket_path` |
 | | `-l, --log-level <LVL>` | `"trace"`, `"debug"`, `"info"`... | `[daemon].log_level` |
-| **Audio Output** | `-b, --backend <BACKEND>` | `"alsa"`, `"wasapi"`, `"asio"`, `"oboe"`, `"mock"` | `[output].backend` |
-| | `-d, --device <DEVICE>` | `"hw:CARD=Audio,DEV=0"` (ALSA), `"SXW UAD ASIO"` / `"default"` (ASIO) | `[output].device` |
+| | `--allow-multiple-instances` | Flag | *(Bỏ qua cơ chế khóa đơn phiên, cho phép chạy song song)* |
+| | `--background` | Flag | *(Chạy nền; trên Windows tự động ẩn cửa sổ dòng lệnh console)* |
+| | `--tray [<BOOL>]` | `true` hoặc `false` | *(Hiển thị icon thông báo khay hệ thống trên Windows; mặc định bật khi có `--background`)* |
+| **Quản lý Service** | `--service <ACTION>` | `"install"`, `"uninstall"`, `"start"`, `"stop"`, `"status"` | *(Quản lý dịch vụ chạy tự động cùng hệ điều hành)* |
+| | `--service-install` | Flag | *(Cài đặt dịch vụ nền tự khởi động và thoát)* |
+| | `--service-uninstall` | Flag | *(Gỡ bỏ dịch vụ nền và thoát)* |
+| | `--service-status` | Flag | *(Kiểm tra trạng thái dịch vụ nền và thoát)* |
+| | `--service-start` | Flag | *(Khởi động dịch vụ nền và thoát)* |
+| | `--service-stop` | Flag | *(Dừng dịch vụ nền đang chạy và thoát)* |
+| **Audio Output** | `-b, --backend <BACKEND>` | `"alsa"`, `"wasapi"`, `"asio"`, `"android-usb"`, `"android"`, `"oboe"`, `"mock"` | `[output].backend` |
+| | `-d, --device <DEVICE>` | `"hw:CARD=Audio,DEV=0"` (ALSA), `"SXW UAD ASIO"` / `"default"` (ASIO), `"fd:42"` (Android USB) | `[output].device` |
 | | `--bit-perfect [<BOOL>]` | `true` hoặc `false` | `[output].bit_perfect` |
 | | `--dsd-mode <MODE>` | `"auto"`, `"native"`, `"dop"` | `[output].dsd_mode` |
 | | `--buffer-time-ms <MS>` | Integer (`200`) | `[output].buffer_time_ms` |
@@ -431,25 +443,64 @@ kiiaud -b asio --dac-info
 # 4. Chạy trên Linux ALSA với file config có sẵn nhưng ghi đè thiết bị DAC và chế độ DSD DoP:
 kiiaud -d "hw:1,0" --dsd-mode dop
 
-# 5. Tắt adapter WebUI và MPD trực tiếp từ dòng lệnh:
+# 5. Chạy trên Android với driver USB Audio UAC2 thuần Rust trực tiếp tới DAC:
+kiiaud -b android-usb -d fd:42
+
+# 6. Khởi động chạy nền và kích hoạt icon khay hệ thống (System Tray) trên Windows:
+kiiaud --background --tray
+
+# 7. Cài đặt tự khởi động cùng Windows (User Logon Task) hoặc Linux (systemd user unit):
+kiiaud --service install
+kiiaud --service status
+kiiaud --service start
+kiiaud --service stop
+
+# 8. Tắt adapter WebUI và MPD trực tiếp từ dòng lệnh:
 kiiaud --web false --mpd false
 
-# 6. Kích hoạt và kết nối nhanh tới Jellyfin Server mà không cần mở file cấu hình:
+# 9. Kích hoạt và kết nối nhanh tới Jellyfin Server mà không cần mở file cấu hình:
 kiiaud --jellyfin --jellyfin-url "http://192.168.1.10:8096" --jellyfin-api-key "secret-key-123"
 
-# 7. Kết nối từ xa tới Lyrion Anywhere Gateway bằng mã ghép đôi 1 lần (Bit-Perfect Passthrough):
+# 10. Kết nối từ xa tới Lyrion Anywhere Gateway bằng mã ghép đôi 1 lần (Bit-Perfect Passthrough):
 kiiaud --lms --lms-gateway "https://music.example.com" --lms-pair-code "ABCDEFGHJK" --lms-quality original
 
-# 8. Kiểm tra cấu hình kết hợp các cờ ghi đè (không khởi động server):
+# 11. Kiểm tra cấu hình kết hợp các cờ ghi đè (không khởi động server):
 kiiaud --check-config -b asio -d "SXW UAD ASIO" --bit-perfect true
 
-# 9. Xuất ra file TOML mới từ cấu hình hiện tại kết hợp ghi đè dòng lệnh:
+# 12. Xuất ra file TOML mới từ cấu hình hiện tại kết hợp ghi đè dòng lệnh:
 kiiaud --print-config -b asio -d "SXW UAD ASIO" --lms --lms-host "192.168.1.80" > /tmp/resolved.toml
 ```
 
 ---
 
-## 4. Bảo mật File Cấu hình (Security & File Permissions)
+## 4. Quản lý Dịch vụ Nền & Khay Hệ thống (Background Service & System Tray)
+
+### 4.1. Giải pháp Service trên Windows (Task Scheduler vs. Session 0)
+Trong kiến trúc Windows, các service truyền thống (`services.msc` / `sc.exe`) bị cô lập hoàn toàn trong **`Session 0`**. Kể từ Windows Vista trở đi, Microsoft tước bỏ toàn bộ quyền truy cập thiết bị âm thanh, phiên WASAPI Exclusive và các driver COM ASIO đối với các tiến trình chạy trong Session 0.
+
+Để giải quyết vấn đề này mà vẫn đảm bảo daemon chạy tự động và không bị gián đoạn:
+- Lệnh `kiiaud --service install` sử dụng **Windows Task Scheduler** (`schtasks.exe`) để đăng ký task tự khởi chạy ngay khi người dùng đăng nhập (`/SC ONLOGON /RL LIMITED /DELAY 0000:05`).
+- Tiến trình chạy trực tiếp trong interactive user session, có đầy đủ quyền mở driver ASIO, WASAPI Exclusive và hiển thị System Tray.
+
+### 4.2. Quản lý Service trên Linux (systemd --user)
+- Lệnh `kiiaud --service install` tự động sinh file unit tại `~/.config/systemd/user/kiiaud.service` và gọi `systemctl --user enable --now kiiaud`.
+- Hoạt động trong session của user có quyền truy cập group `audio` và các cổng socket mạng mà không cần quyền `sudo`/`root`.
+
+### 4.3. Tích hợp Khay Hệ thống (System Tray) trên Windows
+Khi chạy với cờ `--background` hoặc `--tray`:
+- Cửa sổ terminal console sẽ tự động ẩn đi (`SW_HIDE`).
+- Biểu tượng `kiiaud` xuất hiện tại khu vực khay thông báo thanh taskbar.
+- Click chuột trái / đúp chuột: Mở ngay WebUI trên trình duyệt web mặc định.
+- Click chuột phải: Hiển thị menu ngữ cảnh trực quan:
+  - Trạng thái phát nhạc và DAC đang kết nối (vd: `Active: Playing (192.0 kHz / 24-bit)` hoặc `Active: Playing (DSD64)`).
+  - Tên thiết bị DAC và backend xuất âm thanh (`DAC: SXW UAD ASIO (asio)`).
+  - Menu `Open WebUI (http://localhost:7110)`.
+  - Toggle `Show Console Window` / `Hide Console Window` để soi log realtime khi cần.
+  - `Exit kiiaud` để tắt an toàn và giải phóng tài nguyên phần cứng.
+
+---
+
+## 5. Bảo mật File Cấu hình (Security & File Permissions)
 
 > [!WARNING]
 > Nếu bạn sử dụng Jellyfin Adapter với `username`/`password` hoặc `api_key`, file cấu hình sẽ chứa thông tin xác thực dạng văn bản.
