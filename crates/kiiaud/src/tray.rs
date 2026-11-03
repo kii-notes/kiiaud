@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 #[cfg(windows)]
 pub fn hide_console_window() {
     use windows::Win32::System::Console::GetConsoleWindow;
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
     unsafe {
         let hwnd = GetConsoleWindow();
         if !hwnd.is_invalid() {
@@ -83,10 +83,10 @@ fn to_wide(s: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 fn open_browser(url: &str) {
-    use windows::core::{PCWSTR, w};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{PCWSTR, w};
 
     let wide = to_wide(url);
     unsafe {
@@ -117,19 +117,16 @@ unsafe extern "system" fn tray_wnd_proc(
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{LRESULT, POINT, RECT};
     use windows::Win32::System::Console::GetConsoleWindow;
-    use windows::Win32::UI::Shell::{
-        NOTIFYICONDATAW, NIM_DELETE, Shell_NotifyIconW,
-    };
+    use windows::Win32::UI::Shell::{NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW};
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, DefWindowProcW, DestroyMenu, DestroyWindow, GetCursorPos,
-        IsWindowVisible, PostQuitMessage, SetForegroundWindow, ShowWindow, TrackPopupMenu,
-        MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_HIDE, SW_SHOW,
-        TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK,
-        WM_LBUTTONUP, WM_RBUTTONUP,
+        IsWindowVisible, MF_GRAYED, MF_SEPARATOR, MF_STRING, PostQuitMessage, SW_HIDE, SW_SHOW,
+        SetForegroundWindow, ShowWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
+        WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
     };
+    use windows::core::PCWSTR;
 
     unsafe {
         match msg {
@@ -143,16 +140,32 @@ unsafe extern "system" fn tray_wnd_proc(
                         let lock = TRAY_STATE.lock();
                         if let Some(ctx) = lock.as_ref() {
                             let header = to_wide(&format!("kiiaud — {}", ctx.daemon_name));
-                            let _ = AppendMenuW(hmenu, MF_STRING | MF_GRAYED, 0, PCWSTR(header.as_ptr()));
+                            let _ = AppendMenuW(
+                                hmenu,
+                                MF_STRING | MF_GRAYED,
+                                0,
+                                PCWSTR(header.as_ptr()),
+                            );
 
-                            let dac_line = to_wide(&format!("DAC: {} ({})", ctx.device_name, ctx.backend));
-                            let _ = AppendMenuW(hmenu, MF_STRING | MF_GRAYED, 0, PCWSTR(dac_line.as_ptr()));
+                            let dac_line =
+                                to_wide(&format!("DAC: {} ({})", ctx.device_name, ctx.backend));
+                            let _ = AppendMenuW(
+                                hmenu,
+                                MF_STRING | MF_GRAYED,
+                                0,
+                                PCWSTR(dac_line.as_ptr()),
+                            );
 
                             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
                             if let Some(url) = &ctx.web_url {
                                 let web_item = to_wide(&format!("Open WebUI ({url})"));
-                                let _ = AppendMenuW(hmenu, MF_STRING, IDM_OPEN_WEBUI, PCWSTR(web_item.as_ptr()));
+                                let _ = AppendMenuW(
+                                    hmenu,
+                                    MF_STRING,
+                                    IDM_OPEN_WEBUI,
+                                    PCWSTR(web_item.as_ptr()),
+                                );
                             }
 
                             let con = GetConsoleWindow();
@@ -162,11 +175,17 @@ unsafe extern "system" fn tray_wnd_proc(
                             } else {
                                 "Show Console Window"
                             });
-                            let _ = AppendMenuW(hmenu, MF_STRING, IDM_TOGGLE_CONSOLE, PCWSTR(con_text.as_ptr()));
+                            let _ = AppendMenuW(
+                                hmenu,
+                                MF_STRING,
+                                IDM_TOGGLE_CONSOLE,
+                                PCWSTR(con_text.as_ptr()),
+                            );
 
                             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
                             let exit_text = to_wide("Exit kiiaud");
-                            let _ = AppendMenuW(hmenu, MF_STRING, IDM_EXIT, PCWSTR(exit_text.as_ptr()));
+                            let _ =
+                                AppendMenuW(hmenu, MF_STRING, IDM_EXIT, PCWSTR(exit_text.as_ptr()));
                         }
                         drop(lock);
 
@@ -183,7 +202,8 @@ unsafe extern "system" fn tray_wnd_proc(
                         let _ = DestroyMenu(hmenu);
                     }
                 } else if event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK {
-                    let web_url: Option<String> = TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
+                    let web_url: Option<String> =
+                        TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
                     if let Some(ref url) = web_url {
                         open_browser(url);
                     } else {
@@ -203,7 +223,8 @@ unsafe extern "system" fn tray_wnd_proc(
                 let id = (wparam.0 & 0xffff) as usize;
                 match id {
                     IDM_OPEN_WEBUI => {
-                        let web_url: Option<String> = TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
+                        let web_url: Option<String> =
+                            TRAY_STATE.lock().as_ref().and_then(|c| c.web_url.clone());
                         if let Some(ref url) = web_url {
                             open_browser(url);
                         }
@@ -244,15 +265,15 @@ unsafe extern "system" fn tray_wnd_proc(
 
 #[cfg(windows)]
 fn run_tray_message_loop(daemon_name: String) {
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HINSTANCE, HWND};
     use windows::Win32::UI::Shell::{
-        NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, Shell_NotifyIconW,
+        NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NOTIFYICONDATAW, Shell_NotifyIconW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, GetMessageW, LoadIconW, RegisterClassW,
-        TranslateMessage, HMENU, IDI_APPLICATION, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
+        CreateWindowExW, DispatchMessageW, GetMessageW, HMENU, IDI_APPLICATION, LoadIconW, MSG,
+        RegisterClassW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
     };
+    use windows::core::PCWSTR;
 
     unsafe {
         let class_name = to_wide("kiiaud_tray_wnd_class");

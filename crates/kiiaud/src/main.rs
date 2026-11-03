@@ -719,7 +719,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Initialize System Tray if enabled (Windows only; default true in background mode or on Windows)
-    let enable_tray = args.tray.unwrap_or(args.background || cfg!(target_os = "windows"));
+    let enable_tray = args
+        .tray
+        .unwrap_or(args.background || cfg!(target_os = "windows"));
     if enable_tray {
         let web_url = if config.adapter.web.enabled {
             let listen = &config.adapter.web.listen;

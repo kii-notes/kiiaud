@@ -73,8 +73,12 @@ fn install_service() -> Result<()> {
     println!("\n[OK] Successfully registered 'kiiaud' background task!");
     println!("Features:");
     println!("  - Auto-start: Starts automatically whenever you log into Windows.");
-    println!("  - Session-aware: Runs in user session with full ASIO / WASAPI Exclusive DAC access.");
-    println!("  - Headless/Tray: Runs hidden with a System Tray icon in the taskbar notification area.");
+    println!(
+        "  - Session-aware: Runs in user session with full ASIO / WASAPI Exclusive DAC access."
+    );
+    println!(
+        "  - Headless/Tray: Runs hidden with a System Tray icon in the taskbar notification area."
+    );
     println!("\nManagement Commands:");
     println!("  Start now:   kiiaud --service start  (or kiiaud --service-start)");
     println!("  Stop now:    kiiaud --service stop   (or kiiaud --service-stop)");
@@ -117,7 +121,10 @@ fn status_service() -> Result<()> {
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        println!("Service task 'kiiaud' is NOT installed or not found: {}", err.trim());
+        println!(
+            "Service task 'kiiaud' is NOT installed or not found: {}",
+            err.trim()
+        );
         println!("To install it, run: kiiaud --service install");
         return Ok(());
     }
@@ -290,7 +297,9 @@ fn stop_service() -> Result<()> {
 // -----------------------------------------------------------------------------
 #[cfg(all(not(windows), not(target_os = "linux")))]
 fn install_service() -> Result<()> {
-    bail!("Service installation is currently supported on Windows (Task Scheduler) and Linux (systemd).");
+    bail!(
+        "Service installation is currently supported on Windows (Task Scheduler) and Linux (systemd)."
+    );
 }
 #[cfg(all(not(windows), not(target_os = "linux")))]
 fn uninstall_service() -> Result<()> {
@@ -308,4 +317,3 @@ fn start_service() -> Result<()> {
 fn stop_service() -> Result<()> {
     bail!("Stopping service is currently supported on Windows and Linux.");
 }
-

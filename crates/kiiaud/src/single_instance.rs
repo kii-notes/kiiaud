@@ -16,9 +16,9 @@ pub struct SingleInstanceGuard {
 #[cfg(windows)]
 impl SingleInstanceGuard {
     pub fn acquire(name: &str) -> Result<Self> {
-        use windows::core::{HSTRING, PCWSTR};
         use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
         use windows::Win32::System::Threading::CreateMutexW;
+        use windows::core::{HSTRING, PCWSTR};
 
         // Clean name for mutex
         let sanitized = name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_");
@@ -26,8 +26,9 @@ impl SingleInstanceGuard {
         let h_name = HSTRING::from(mutex_name);
 
         unsafe {
-            let handle = CreateMutexW(None, true, PCWSTR(h_name.as_ptr()))
-                .map_err(|e| anyhow::anyhow!("Failed to create Windows single-instance mutex: {e}"))?;
+            let handle = CreateMutexW(None, true, PCWSTR(h_name.as_ptr())).map_err(|e| {
+                anyhow::anyhow!("Failed to create Windows single-instance mutex: {e}")
+            })?;
 
             if GetLastError() == ERROR_ALREADY_EXISTS {
                 let _ = CloseHandle(handle);
@@ -83,7 +84,9 @@ impl SingleInstanceGuard {
             .truncate(false)
             .mode(0o600)
             .open(&lock_path)
-            .map_err(|e| anyhow::anyhow!("Failed to open lock file '{}': {e}", lock_path.display()))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to open lock file '{}': {e}", lock_path.display())
+            })?;
 
         let fd = file.as_raw_fd();
         let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
@@ -155,7 +158,10 @@ mod tests {
 
         // Second acquisition with same name must fail
         let guard2 = SingleInstanceGuard::acquire(&test_name);
-        assert!(guard2.is_err(), "Second acquisition while first is held must fail");
+        assert!(
+            guard2.is_err(),
+            "Second acquisition while first is held must fail"
+        );
 
         // Drop the first guard
         drop(guard1);

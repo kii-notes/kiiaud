@@ -2,6 +2,14 @@
 /target/
 **/*.rs.bk
 *.pdb
+*.rlib
+*.exe
+*.dll
+*.so
+*.dylib
+/dist/
+/dist-*/
+
 
 # IDE / Editor
 .vscode/
