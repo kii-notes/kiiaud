@@ -1071,14 +1071,14 @@ pub fn build_stat_packet(
         (telemetry.buffer_occupancy, telemetry.buffer_capacity)
     } else {
         match st.state {
-            PlayerState::Play => (1024 * 1024u32, 4 * 1024 * 1024u32),
-            PlayerState::Pause => (1024 * 1024u32, 4 * 1024 * 1024u32),
-            PlayerState::Stop => (0u32, 4 * 1024 * 1024u32),
+            PlayerState::Play => (1024 * 1024u32, 8 * 1024 * 1024u32),
+            PlayerState::Pause => (1024 * 1024u32, 8 * 1024 * 1024u32),
+            PlayerState::Stop => (0u32, 8 * 1024 * 1024u32),
         }
     };
 
     let output_buf_fullness = match st.state {
-        PlayerState::Play => 256 * 1024u32,
+        PlayerState::Play => 512 * 1024u32,
         PlayerState::Pause => 0u32,
         PlayerState::Stop => 0u32,
     };

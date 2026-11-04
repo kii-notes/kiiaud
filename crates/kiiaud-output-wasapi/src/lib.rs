@@ -19,6 +19,19 @@ use kiiaud_output::AudioOutput;
 use kiiaud_output::dop::DopEncoder;
 
 #[cfg(target_os = "windows")]
+use std::collections::VecDeque;
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "windows")]
+use std::thread::{self, JoinHandle};
+#[cfg(target_os = "windows")]
+use std::time::Duration;
+#[cfg(target_os = "windows")]
+use parking_lot::{Condvar, Mutex};
+
+#[cfg(target_os = "windows")]
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
@@ -35,7 +48,7 @@ use windows::{
         },
         System::Threading::{
             AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW,
-            WaitForSingleObject,
+            SetEvent, WaitForSingleObject,
         },
         UI::Shell::PropertiesSystem::PROPERTYKEY,
     },
@@ -136,6 +149,46 @@ impl WasapiFormat {
     }
 }
 
+#[cfg(target_os = "windows")]
+struct SendWrapper<T>(T);
+#[cfg(target_os = "windows")]
+unsafe impl<T> Send for SendWrapper<T> {}
+#[cfg(target_os = "windows")]
+unsafe impl<T> Sync for SendWrapper<T> {}
+
+#[cfg(target_os = "windows")]
+impl<T> SendWrapper<T> {
+    pub fn new(val: T) -> Self {
+        Self(val)
+    }
+    pub fn take(self) -> T {
+        self.0
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct RenderSharedState {
+    ring: Mutex<VecDeque<u8>>,
+    condvar_space: Condvar,
+    condvar_empty: Condvar,
+    stop_flag: AtomicBool,
+    is_paused: AtomicBool,
+}
+
+#[cfg(target_os = "windows")]
+fn copy_from_ring(ring: &mut VecDeque<u8>, dest: *mut u8, count: usize) {
+    let (s1, s2) = ring.as_slices();
+    let s1_len = s1.len().min(count);
+    unsafe {
+        std::ptr::copy_nonoverlapping(s1.as_ptr(), dest, s1_len);
+        let rem = count - s1_len;
+        if rem > 0 {
+            std::ptr::copy_nonoverlapping(s2.as_ptr(), dest.add(s1_len), rem);
+        }
+    }
+    ring.drain(0..count);
+}
+
 #[allow(dead_code)]
 pub struct WasapiAudioOutput {
     config: OutputConfig,
@@ -154,6 +207,12 @@ pub struct WasapiAudioOutput {
     #[cfg(target_os = "windows")]
     bytes_per_frame: usize,
     #[cfg(target_os = "windows")]
+    target_buffer_bytes: usize,
+    #[cfg(target_os = "windows")]
+    render_shared: Option<Arc<RenderSharedState>>,
+    #[cfg(target_os = "windows")]
+    render_thread: Option<JoinHandle<()>>,
+    #[cfg(target_os = "windows")]
     is_playing: bool,
     #[cfg(target_os = "windows")]
     is_shared: bool,
@@ -164,7 +223,6 @@ pub struct WasapiAudioOutput {
     dop_encoder: Option<DopEncoder>,
     dop_scratch: Vec<i32>,
     byte_scratch: Vec<u8>,
-    fifo_buffer: Vec<u8>,
 }
 
 impl WasapiAudioOutput {
@@ -186,6 +244,12 @@ impl WasapiAudioOutput {
             #[cfg(target_os = "windows")]
             bytes_per_frame: 0,
             #[cfg(target_os = "windows")]
+            target_buffer_bytes: 0,
+            #[cfg(target_os = "windows")]
+            render_shared: None,
+            #[cfg(target_os = "windows")]
+            render_thread: None,
+            #[cfg(target_os = "windows")]
             is_playing: false,
             #[cfg(target_os = "windows")]
             is_shared: false,
@@ -196,7 +260,6 @@ impl WasapiAudioOutput {
             dop_encoder: None,
             dop_scratch: Vec::new(),
             byte_scratch: Vec::new(),
-            fifo_buffer: Vec::new(),
         }
     }
 }
@@ -499,12 +562,7 @@ impl AudioOutput for WasapiAudioOutput {
             }
         }
 
-        // 9. Register thread with MMCSS "Pro Audio"
-        let mut task_index = 0u32;
-        let mmcss = unsafe { AvSetMmThreadCharacteristicsW(w!("Pro Audio"), &mut task_index) };
-        let mmcss_handle = mmcss.ok();
-
-        // 10. Start playback stream
+        // Start playback stream
         unsafe { client.Start() }
             .map_err(|e| KiiaudError::Output(format!("Failed to start WASAPI client: {e}")))?;
 
@@ -513,6 +571,125 @@ impl AudioOutput for WasapiAudioOutput {
             AudioFormat::Dsd { rate, .. } => rate.dop_pcm_rate_hz(),
         };
 
+        // Decoupled PCM ring-buffer: target 500ms cushion (or config.buffer_time_ms if larger)
+        let cushion_ms = self.config.buffer_time_ms.max(500);
+        let target_buffer_bytes =
+            ((rate_hz as u64) * (cushion_ms as u64) * (bytes_per_frame as u64) / 1000) as usize;
+
+        let shared = Arc::new(RenderSharedState {
+            ring: Mutex::new(VecDeque::with_capacity(target_buffer_bytes * 2)),
+            condvar_space: Condvar::new(),
+            condvar_empty: Condvar::new(),
+            stop_flag: AtomicBool::new(false),
+            is_paused: AtomicBool::new(false),
+        });
+
+        let client_render_send = SendWrapper::new(render_client.clone());
+        let client_audio_send = SendWrapper::new(client.clone());
+        let event_isize = event.0 as isize;
+        let shared_clone = Arc::clone(&shared);
+        let is_shared_mode = is_fallback;
+
+        let render_thread = thread::Builder::new()
+            .name("kiiaud-wasapi-render".to_owned())
+            .spawn(move || {
+                let client_render = client_render_send.take();
+                let client_audio = client_audio_send.take();
+                let event = HANDLE(event_isize as *mut core::ffi::c_void);
+
+                unsafe {
+                    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                }
+                let mut task_index = 0u32;
+                let mmcss =
+                    unsafe { AvSetMmThreadCharacteristicsW(w!("Pro Audio"), &mut task_index) };
+                let _mmcss_handle = mmcss.ok();
+
+                while !shared_clone.stop_flag.load(Ordering::Relaxed) {
+                    let wait_res = unsafe { WaitForSingleObject(event, 2000) };
+                    if wait_res != WAIT_OBJECT_0 {
+                        if shared_clone.stop_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        continue;
+                    }
+
+                    if shared_clone.stop_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    if shared_clone.is_paused.load(Ordering::Relaxed) {
+                        continue;
+                    }
+
+                    if is_shared_mode {
+                        let padding = unsafe { client_audio.GetCurrentPadding() }.unwrap_or(0);
+                        let avail_frames = buffer_frames.saturating_sub(padding);
+                        if avail_frames == 0 {
+                            continue;
+                        }
+                        let avail_bytes = (avail_frames as usize) * bytes_per_frame;
+                        if let Ok(p_buf) = unsafe { client_render.GetBuffer(avail_frames) } {
+                            let mut ring = shared_clone.ring.lock();
+                            let to_copy = ring.len().min(avail_bytes);
+                            if to_copy > 0 {
+                                copy_from_ring(&mut ring, p_buf, to_copy);
+                            }
+                            if to_copy < avail_bytes {
+                                unsafe {
+                                    std::ptr::write_bytes(
+                                        p_buf.add(to_copy),
+                                        0,
+                                        avail_bytes - to_copy,
+                                    );
+                                }
+                            }
+                            let is_empty = ring.is_empty();
+                            shared_clone.condvar_space.notify_all();
+                            if is_empty {
+                                shared_clone.condvar_empty.notify_all();
+                            }
+                            drop(ring);
+                            let _ = unsafe { client_render.ReleaseBuffer(avail_frames, 0) };
+                        }
+                    } else {
+                        let period_bytes = (buffer_frames as usize) * bytes_per_frame;
+                        if let Ok(p_buf) = unsafe { client_render.GetBuffer(buffer_frames) } {
+                            let mut ring = shared_clone.ring.lock();
+                            let to_copy = ring.len().min(period_bytes);
+                            if to_copy > 0 {
+                                copy_from_ring(&mut ring, p_buf, to_copy);
+                            }
+                            if to_copy < period_bytes {
+                                unsafe {
+                                    std::ptr::write_bytes(
+                                        p_buf.add(to_copy),
+                                        0,
+                                        period_bytes - to_copy,
+                                    );
+                                }
+                            }
+                            let is_empty = ring.is_empty();
+                            shared_clone.condvar_space.notify_all();
+                            if is_empty {
+                                shared_clone.condvar_empty.notify_all();
+                            }
+                            drop(ring);
+                            let _ = unsafe { client_render.ReleaseBuffer(buffer_frames, 0) };
+                        }
+                    }
+                }
+
+                if let Some(m) = _mmcss_handle {
+                    unsafe {
+                        let _ = AvRevertMmThreadCharacteristics(m);
+                    }
+                }
+            })
+            .map_err(|e| {
+                KiiaudError::Output(format!("Failed to spawn WASAPI render thread: {e}"))
+            })?;
+
         tracing::info!(
             device = %self.config.device,
             wasapi_format = ?selected_fmt,
@@ -520,35 +697,33 @@ impl AudioOutput for WasapiAudioOutput {
             channels,
             buffer_frames,
             bytes_per_frame,
+            target_cushion_ms = cushion_ms,
             bit_perfect = self.config.bit_perfect && !is_fallback,
             adaptive_fallback = is_fallback,
             share_mode = if is_fallback { "shared" } else { "exclusive" },
-            "WASAPI audio stream successfully opened and started"
+            "WASAPI audio stream successfully opened and render thread started (500ms decoupled PCM cushion)"
         );
 
         self.client = Some(client);
         self.render_client = Some(render_client);
         self.event_handle = Some(event);
-        self.mmcss_handle = mmcss_handle;
+        self.mmcss_handle = None;
         self.hw_format = Some(selected_fmt);
         self.buffer_frames = buffer_frames;
         self.bytes_per_frame = bytes_per_frame;
+        self.target_buffer_bytes = target_buffer_bytes;
+        self.render_shared = Some(shared);
+        self.render_thread = Some(render_thread);
         self.is_playing = true;
         self.is_shared = is_fallback;
         self.is_adaptive_fallback = is_fallback;
         self.active_format = Some(negotiated_format);
-        self.fifo_buffer.clear();
 
         Ok(negotiated_format)
     }
 
     fn write(&mut self, buffer: &AudioBuffer) -> Result<usize> {
-        let (Some(client), Some(render_client), Some(event_handle), Some(hw_fmt)) = (
-            self.client.as_ref(),
-            self.render_client.as_ref(),
-            self.event_handle,
-            self.hw_format,
-        ) else {
+        let (Some(shared), Some(hw_fmt)) = (self.render_shared.as_ref(), self.hw_format) else {
             return Err(KiiaudError::Output("WASAPI output not opened".to_owned()));
         };
 
@@ -573,87 +748,30 @@ impl AudioOutput for WasapiAudioOutput {
             }
         }
 
-        self.fifo_buffer.extend_from_slice(&self.byte_scratch);
-
-        let period_bytes = (self.buffer_frames as usize) * self.bytes_per_frame;
-        if period_bytes == 0 {
+        if self.byte_scratch.is_empty() {
             return Ok(buffer.frames());
         }
 
-        if self.is_shared {
-            while !self.fifo_buffer.is_empty() {
-                let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
-                let available_frames = self.buffer_frames.saturating_sub(padding);
-                if available_frames == 0 {
-                    // If hardware buffer is already sufficiently buffered (>= 50% capacity),
-                    // return immediately so the decoder thread can keep fetching without unnecessary blocking.
-                    if padding >= self.buffer_frames / 2 {
-                        break;
-                    }
-                    let wait_res = unsafe { WaitForSingleObject(event_handle, 2000) };
-                    if wait_res != WAIT_OBJECT_0 {
-                        tracing::warn!(
-                            wait_code = wait_res.0,
-                            "WASAPI shared WaitForSingleObject timeout or interruption"
-                        );
-                        break;
-                    }
-                    continue;
-                }
-
-                let frames_to_write =
-                    ((self.fifo_buffer.len() / self.bytes_per_frame) as u32).min(available_frames);
-                if frames_to_write == 0 {
-                    break;
-                }
-                let bytes_to_write = (frames_to_write as usize) * self.bytes_per_frame;
-
-                let p_buffer = unsafe { render_client.GetBuffer(frames_to_write) }.map_err(|e| {
-                    KiiaudError::Output(format!("WASAPI shared GetBuffer failed: {e}"))
-                })?;
-
-                unsafe {
-                    std::ptr::copy_nonoverlapping(self.fifo_buffer.as_ptr(), p_buffer, bytes_to_write);
-                    render_client.ReleaseBuffer(frames_to_write, 0)
-                }
-                .map_err(|e| KiiaudError::Output(format!("WASAPI shared ReleaseBuffer failed: {e}")))?;
-
-                self.fifo_buffer.drain(0..bytes_to_write);
-            }
-        } else {
-            while self.fifo_buffer.len() >= period_bytes {
-                // Wait for WASAPI driver event (timeout 2 seconds)
-                let wait_res = unsafe { WaitForSingleObject(event_handle, 2000) };
-                if wait_res != WAIT_OBJECT_0 {
-                    tracing::warn!(
-                        wait_code = wait_res.0,
-                        "WASAPI WaitForSingleObject timeout or interruption"
-                    );
-                    break;
-                }
-
-                let p_buffer = unsafe { render_client.GetBuffer(self.buffer_frames) }.map_err(|e| {
-                    KiiaudError::Output(format!(
-                        "WASAPI GetBuffer({}) failed: {e}",
-                        self.buffer_frames
-                    ))
-                })?;
-
-                unsafe {
-                    std::ptr::copy_nonoverlapping(self.fifo_buffer.as_ptr(), p_buffer, period_bytes);
-                }
-
-                unsafe { render_client.ReleaseBuffer(self.buffer_frames, 0) }
-                    .map_err(|e| KiiaudError::Output(format!("WASAPI ReleaseBuffer failed: {e}")))?;
-
-                self.fifo_buffer.drain(0..period_bytes);
-            }
+        // Throttle decoder thread when the ring buffer reaches the target cushion
+        let mut ring = shared.ring.lock();
+        while ring.len() >= self.target_buffer_bytes && !shared.stop_flag.load(Ordering::Relaxed) {
+            shared.condvar_space.wait_for(&mut ring, Duration::from_millis(50));
         }
+
+        if shared.stop_flag.load(Ordering::Relaxed) {
+            return Ok(buffer.frames());
+        }
+
+        ring.extend(&self.byte_scratch);
+        drop(ring);
 
         Ok(buffer.frames())
     }
 
     fn pause(&mut self) -> Result<()> {
+        if let Some(shared) = self.render_shared.as_ref() {
+            shared.is_paused.store(true, Ordering::SeqCst);
+        }
         if let Some(client) = self.client.as_ref() {
             if self.is_playing {
                 let _ = unsafe { client.Stop() };
@@ -664,6 +782,9 @@ impl AudioOutput for WasapiAudioOutput {
     }
 
     fn resume(&mut self) -> Result<()> {
+        if let Some(shared) = self.render_shared.as_ref() {
+            shared.is_paused.store(false, Ordering::SeqCst);
+        }
         if let Some(client) = self.client.as_ref() {
             if !self.is_playing {
                 let _ = unsafe { client.Start() };
@@ -674,75 +795,60 @@ impl AudioOutput for WasapiAudioOutput {
     }
 
     fn drain(&mut self) -> Result<()> {
-        let (Some(client), Some(render_client), Some(event_handle)) =
-            (self.client.as_ref(), self.render_client.as_ref(), self.event_handle)
-        else {
+        let Some(shared) = self.render_shared.as_ref() else {
             return Ok(());
         };
 
-        if self.is_shared {
-            while !self.fifo_buffer.is_empty() {
-                let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
-                let available_frames = self.buffer_frames.saturating_sub(padding);
-                if available_frames == 0 {
-                    let _ = unsafe { WaitForSingleObject(event_handle, 500) };
-                    continue;
-                }
-                let frames_to_write =
-                    ((self.fifo_buffer.len() / self.bytes_per_frame) as u32).min(available_frames);
-                if frames_to_write == 0 {
-                    break;
-                }
-                let bytes_to_write = (frames_to_write as usize) * self.bytes_per_frame;
-                if let Ok(p_buffer) = unsafe { render_client.GetBuffer(frames_to_write) } {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            self.fifo_buffer.as_ptr(),
-                            p_buffer,
-                            bytes_to_write,
-                        );
-                        let _ = render_client.ReleaseBuffer(frames_to_write, 0);
-                    }
-                    self.fifo_buffer.drain(0..bytes_to_write);
-                } else {
-                    break;
-                }
-            }
-            // Wait briefly for buffer to finish rendering
-            for _ in 0..10 {
-                let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
-                if padding == 0 {
-                    break;
-                }
-                let _ = unsafe { WaitForSingleObject(event_handle, 50) };
-            }
-        } else {
-            let period_bytes = (self.buffer_frames as usize) * self.bytes_per_frame;
-            if period_bytes > 0 && !self.fifo_buffer.is_empty() {
-                // Pad remaining frames with zeros
-                if self.fifo_buffer.len() < period_bytes {
-                    self.fifo_buffer.resize(period_bytes, 0);
-                }
-
-                let _ = unsafe { WaitForSingleObject(event_handle, 2000) };
-                if let Ok(p_buffer) = unsafe { render_client.GetBuffer(self.buffer_frames) } {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            self.fifo_buffer.as_ptr(),
-                            p_buffer,
-                            period_bytes,
-                        );
-                        let _ = render_client.ReleaseBuffer(self.buffer_frames, 0);
-                    }
-                }
-                self.fifo_buffer.clear();
-            }
+        // Wait until all decoded PCM frames have been consumed by the render thread
+        let mut ring = shared.ring.lock();
+        while !ring.is_empty() && !shared.stop_flag.load(Ordering::Relaxed) {
+            shared.condvar_empty.wait_for(&mut ring, Duration::from_millis(50));
         }
+        drop(ring);
+
+        // Allow hardware buffer time to finish rendering
+        let wait_ms = (self.config.period_time_ms.max(20) * 2) as u64;
+        thread::sleep(Duration::from_millis(wait_ms));
 
         Ok(())
     }
 
+    fn flush(&mut self) -> Result<()> {
+        if let Some(shared) = self.render_shared.as_ref() {
+            let mut ring = shared.ring.lock();
+            ring.clear();
+            shared.condvar_space.notify_all();
+        }
+        if let Some(client) = self.client.as_ref() {
+            if self.is_playing {
+                let _ = unsafe { client.Reset() };
+            }
+        }
+        Ok(())
+    }
+
     fn stop(&mut self) -> Result<()> {
+        if let Some(shared) = self.render_shared.take() {
+            shared.stop_flag.store(true, Ordering::SeqCst);
+            shared.condvar_space.notify_all();
+            shared.condvar_empty.notify_all();
+        }
+
+        if let Some(event) = self.event_handle.take() {
+            // Signal event so render thread exits immediately from WaitForSingleObject
+            unsafe {
+                let _ = SetEvent(event);
+            }
+            if let Some(thread) = self.render_thread.take() {
+                let _ = thread.join();
+            }
+            unsafe {
+                let _ = CloseHandle(event);
+            }
+        } else if let Some(thread) = self.render_thread.take() {
+            let _ = thread.join();
+        }
+
         if let Some(client) = self.client.take() {
             if self.is_playing {
                 let _ = unsafe { client.Stop() };
@@ -755,15 +861,10 @@ impl AudioOutput for WasapiAudioOutput {
             let _ = unsafe { AvRevertMmThreadCharacteristics(mmcss) };
         }
 
-        if let Some(event) = self.event_handle.take() {
-            let _ = unsafe { CloseHandle(event) };
-        }
-
         self.render_client = None;
         self.hw_format = None;
         self.active_format = None;
         self.dop_encoder = None;
-        self.fifo_buffer.clear();
         self.is_shared = false;
         self.is_adaptive_fallback = false;
         Ok(())
@@ -927,6 +1028,10 @@ impl AudioOutput for WasapiAudioOutput {
     }
 
     fn drain(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
         Ok(())
     }
 

@@ -17,11 +17,11 @@ use std::thread;
 use std::time::Duration;
 use symphonia::core::io::MediaSource;
 
-/// Capacity of the network pre-buffering RAM ring-buffer (4 MiB $\approx$ 20-40 seconds of 16/44.1 FLAC).
-pub const STREAM_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
+/// Capacity of the network pre-buffering RAM ring-buffer (8 MiB $\approx$ 40-80 seconds of 16/44.1 FLAC).
+pub const STREAM_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
-/// Initial watermark bytes before playback starts to ensure glitch-free initial playback (128 KiB).
-pub const INITIAL_PREBUFFER_BYTES: usize = 128 * 1024;
+/// Initial watermark bytes before playback starts to ensure glitch-free initial playback (256 KiB).
+pub const INITIAL_PREBUFFER_BYTES: usize = 256 * 1024;
 
 /// Real-time telemetry snapshot of the active streaming buffer.
 #[derive(Debug, Clone, Copy, Default)]
@@ -382,7 +382,7 @@ pub fn open_http_stream(
         ?content_type,
         ?ext_hint,
         anywhere_stream = anywhere_meta.is_some(),
-        "opened HTTP audio stream (with 4 MiB asynchronous RAM pre-buffering)"
+        "opened HTTP audio stream (with 8 MiB asynchronous RAM pre-buffering)"
     );
 
     let base_reader: Box<dyn Read + Send> = if let Some((session, stream_seq)) = anywhere_meta {

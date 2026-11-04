@@ -953,6 +953,7 @@ fn handle_worker_cmd(
                 if let Err(err) = dec.seek(target) {
                     tracing::warn!(%err, "seek failed");
                 } else {
+                    let _ = output.flush();
                     let rate_hz = match fmt {
                         AudioFormat::Pcm { sample_rate, .. } => *sample_rate,
                         AudioFormat::Dsd { rate, .. } => rate.byte_rate_hz(),

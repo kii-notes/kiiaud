@@ -30,6 +30,11 @@ pub trait AudioOutput: Send {
     /// Drain remaining buffered audio at the end of a track.
     fn drain(&mut self) -> Result<()>;
 
+    /// Flush any internal queued buffers (e.g. during seek or stop).
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Stop output immediately and release or reset the hardware device.
     fn stop(&mut self) -> Result<()>;
 
