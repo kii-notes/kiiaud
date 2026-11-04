@@ -585,6 +585,11 @@ impl AudioOutput for WasapiAudioOutput {
                 let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
                 let available_frames = self.buffer_frames.saturating_sub(padding);
                 if available_frames == 0 {
+                    // If hardware buffer is already sufficiently buffered (>= 50% capacity),
+                    // return immediately so the decoder thread can keep fetching without unnecessary blocking.
+                    if padding >= self.buffer_frames / 2 {
+                        break;
+                    }
                     let wait_res = unsafe { WaitForSingleObject(event_handle, 2000) };
                     if wait_res != WAIT_OBJECT_0 {
                         tracing::warn!(
@@ -624,6 +629,7 @@ impl AudioOutput for WasapiAudioOutput {
                         wait_code = wait_res.0,
                         "WASAPI WaitForSingleObject timeout or interruption"
                     );
+                    break;
                 }
 
                 let p_buffer = unsafe { render_client.GetBuffer(self.buffer_frames) }.map_err(|e| {

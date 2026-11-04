@@ -1,16 +1,230 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! HTTP/HTTPS and raw TCP stream `MediaSource` implementations for Symphonia.
+//!
+//! Includes an asynchronous background pre-buffering reader (`PrebufferedStreamReader`)
+//! with a dedicated 4 MiB RAM ring-buffer to completely decouple real-time audio decoding
+//! and WASAPI/ALSA output from network RTT latency and Wi-Fi/LAN jitter.
 
 use kiiaud_core::{KiiaudError, Result, strip_uri_auth};
-use parking_lot::Mutex;
-use std::collections::HashMap;
+use parking_lot::{Condvar, Mutex};
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::thread;
 use std::time::Duration;
 use symphonia::core::io::MediaSource;
+
+/// Capacity of the network pre-buffering RAM ring-buffer (4 MiB $\approx$ 20-40 seconds of 16/44.1 FLAC).
+pub const STREAM_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
+
+/// Initial watermark bytes before playback starts to ensure glitch-free initial playback (128 KiB).
+pub const INITIAL_PREBUFFER_BYTES: usize = 128 * 1024;
+
+/// Real-time telemetry snapshot of the active streaming buffer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StreamTelemetry {
+    pub total_bytes_read: u64,
+    pub buffer_occupancy: u32,
+    pub buffer_capacity: u32,
+}
+
+static STREAM_TELEMETRY: OnceLock<Mutex<StreamTelemetry>> = OnceLock::new();
+
+/// Retrieve current real-time streaming buffer telemetry (used by `kiiaud-adapter-lms` for STAT packets).
+pub fn get_stream_telemetry() -> StreamTelemetry {
+    STREAM_TELEMETRY
+        .get_or_init(|| Mutex::new(StreamTelemetry::default()))
+        .lock()
+        .clone()
+}
+
+/// Reset stream telemetry (called when starting a new stream or receiving `STMf` flush).
+pub fn reset_stream_telemetry() {
+    let cell = STREAM_TELEMETRY.get_or_init(|| Mutex::new(StreamTelemetry::default()));
+    *cell.lock() = StreamTelemetry::default();
+}
+
+fn update_global_telemetry(total: u64, occupancy: u32, capacity: u32) {
+    let cell = STREAM_TELEMETRY.get_or_init(|| Mutex::new(StreamTelemetry::default()));
+    let mut lock = cell.lock();
+    lock.total_bytes_read = total;
+    lock.buffer_occupancy = occupancy;
+    lock.buffer_capacity = capacity;
+}
+
+/// Internal state shared between background producer thread and consumer `Read` calls.
+struct PrebufferState {
+    buffer: VecDeque<u8>,
+    total_bytes_read: u64,
+    eof: bool,
+    error: Option<String>,
+    initial_prebuffered: bool,
+}
+
+/// Dedicated asynchronous stream pre-buffer reader.
+/// Continuously fetches stream bytes in a background worker thread and buffers them in RAM.
+pub struct PrebufferedStreamReader {
+    state: Arc<Mutex<PrebufferState>>,
+    condvar: Arc<Condvar>,
+    stop_flag: Arc<AtomicBool>,
+}
+
+impl PrebufferedStreamReader {
+    pub fn new(mut reader: Box<dyn Read + Send>) -> Self {
+        reset_stream_telemetry();
+
+        let state = Arc::new(Mutex::new(PrebufferState {
+            buffer: VecDeque::with_capacity(INITIAL_PREBUFFER_BYTES * 2),
+            total_bytes_read: 0,
+            eof: false,
+            error: None,
+            initial_prebuffered: false,
+        }));
+        let condvar = Arc::new(Condvar::new());
+        let stop_flag = Arc::new(AtomicBool::new(false));
+
+        let state_clone = Arc::clone(&state);
+        let condvar_clone = Arc::clone(&condvar);
+        let stop_clone = Arc::clone(&stop_flag);
+
+        let _ = thread::Builder::new()
+            .name("kiiaud-stream-buf".to_owned())
+            .spawn(move || {
+                let mut chunk = vec![0u8; 64 * 1024]; // 64 KiB I/O buffer
+                loop {
+                    if stop_clone.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    match reader.read(&mut chunk) {
+                        Ok(0) => {
+                            let mut st = state_clone.lock();
+                            st.eof = true;
+                            st.initial_prebuffered = true;
+                            update_global_telemetry(
+                                st.total_bytes_read,
+                                st.buffer.len() as u32,
+                                STREAM_BUFFER_CAPACITY as u32,
+                            );
+                            condvar_clone.notify_all();
+                            break;
+                        }
+                        Ok(n) => {
+                            let mut st = state_clone.lock();
+                            while st.buffer.len() + n > STREAM_BUFFER_CAPACITY
+                                && !stop_clone.load(Ordering::Relaxed)
+                            {
+                                condvar_clone.wait_for(&mut st, Duration::from_millis(50));
+                            }
+
+                            if stop_clone.load(Ordering::Relaxed) {
+                                break;
+                            }
+
+                            st.buffer.extend(&chunk[..n]);
+                            st.total_bytes_read += n as u64;
+                            if st.buffer.len() >= INITIAL_PREBUFFER_BYTES {
+                                st.initial_prebuffered = true;
+                            }
+                            update_global_telemetry(
+                                st.total_bytes_read,
+                                st.buffer.len() as u32,
+                                STREAM_BUFFER_CAPACITY as u32,
+                            );
+                            condvar_clone.notify_all();
+                        }
+                        Err(e) => {
+                            if e.kind() == io::ErrorKind::Interrupted {
+                                continue;
+                            }
+                            let mut st = state_clone.lock();
+                            st.error = Some(e.to_string());
+                            st.eof = true;
+                            st.initial_prebuffered = true;
+                            condvar_clone.notify_all();
+                            break;
+                        }
+                    }
+                }
+            });
+
+        Self {
+            state,
+            condvar,
+            stop_flag,
+        }
+    }
+}
+
+impl Read for PrebufferedStreamReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let mut st = self.state.lock();
+
+        // Wait for initial pre-buffer watermark before yielding the first batch of frames
+        while !st.initial_prebuffered
+            && !st.eof
+            && st.error.is_none()
+            && !self.stop_flag.load(Ordering::Relaxed)
+        {
+            self.condvar.wait_for(&mut st, Duration::from_millis(50));
+        }
+
+        // Wait if buffer is empty but stream is still running
+        while st.buffer.is_empty()
+            && !st.eof
+            && st.error.is_none()
+            && !self.stop_flag.load(Ordering::Relaxed)
+        {
+            self.condvar.wait(&mut st);
+        }
+
+        if !st.buffer.is_empty() {
+            let to_read = buf.len().min(st.buffer.len());
+            let (s1, s2) = st.buffer.as_slices();
+            let s1_len = s1.len().min(to_read);
+            buf[..s1_len].copy_from_slice(&s1[..s1_len]);
+            let rem = to_read - s1_len;
+            if rem > 0 {
+                buf[s1_len..to_read].copy_from_slice(&s2[..rem]);
+            }
+            st.buffer.drain(0..to_read);
+            update_global_telemetry(
+                st.total_bytes_read,
+                st.buffer.len() as u32,
+                STREAM_BUFFER_CAPACITY as u32,
+            );
+            self.condvar.notify_all();
+            return Ok(to_read);
+        }
+
+        if let Some(ref err) = st.error {
+            return Err(io::Error::new(io::ErrorKind::Other, err.clone()));
+        }
+
+        if st.eof {
+            return Ok(0);
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Stream prebuffer interrupted",
+        ))
+    }
+}
+
+impl Drop for PrebufferedStreamReader {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::SeqCst);
+        self.condvar.notify_all();
+    }
+}
 
 /// Internal header key injected by `kiiaud-adapter-lms` when streaming via Lyrion Anywhere Gateway.
 /// Carries `<session_id>:<stream_seq>` so `open_http_stream` can emit periodic byte acknowledgements.
@@ -168,10 +382,10 @@ pub fn open_http_stream(
         ?content_type,
         ?ext_hint,
         anywhere_stream = anywhere_meta.is_some(),
-        "opened HTTP audio stream"
+        "opened HTTP audio stream (with 4 MiB asynchronous RAM pre-buffering)"
     );
 
-    let reader: Box<dyn Read + Send> = if let Some((session, stream_seq)) = anywhere_meta {
+    let base_reader: Box<dyn Read + Send> = if let Some((session, stream_seq)) = anywhere_meta {
         Box::new(AnywhereAckReader {
             inner: resp,
             session,
@@ -183,8 +397,11 @@ pub fn open_http_stream(
         Box::new(resp)
     };
 
+    let prebuffered_reader: Box<dyn Read + Send> =
+        Box::new(PrebufferedStreamReader::new(base_reader));
+
     Ok((
-        Box::new(StreamMediaSource::new(reader, content_len)),
+        Box::new(StreamMediaSource::new(prebuffered_reader, content_len)),
         ext_hint,
     ))
 }
@@ -213,8 +430,11 @@ pub fn open_tcp_stream(
         }
     }
 
+    let prebuffered_reader: Box<dyn Read + Send> =
+        Box::new(PrebufferedStreamReader::new(Box::new(stream)));
+
     Ok((
-        Box::new(StreamMediaSource::new(Box::new(stream), None)),
+        Box::new(StreamMediaSource::new(prebuffered_reader, None)),
         format_hint,
     ))
 }
@@ -291,4 +511,42 @@ fn mime_to_ext(content_type: &str) -> Option<String> {
         _ => return None,
     };
     Some(ext.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_prebuffered_stream_reader_reads_exact_bytes() {
+        let sample_data = vec![0xABu8; 300 * 1024]; // 300 KiB (> 128 KiB initial watermark)
+        let cursor = Cursor::new(sample_data.clone());
+        let mut reader = PrebufferedStreamReader::new(Box::new(cursor));
+
+        let mut read_buf = Vec::new();
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            let n = reader.read(&mut chunk).expect("read should succeed");
+            if n == 0 {
+                break;
+            }
+            read_buf.extend_from_slice(&chunk[..n]);
+        }
+
+        assert_eq!(read_buf.len(), sample_data.len());
+        assert_eq!(read_buf, sample_data);
+
+        let telemetry = get_stream_telemetry();
+        assert_eq!(telemetry.total_bytes_read, sample_data.len() as u64);
+        assert_eq!(telemetry.buffer_capacity, STREAM_BUFFER_CAPACITY as u32);
+    }
+
+    #[test]
+    fn test_reset_stream_telemetry() {
+        reset_stream_telemetry();
+        let telemetry = get_stream_telemetry();
+        assert_eq!(telemetry.total_bytes_read, 0);
+        assert_eq!(telemetry.buffer_occupancy, 0);
+    }
 }

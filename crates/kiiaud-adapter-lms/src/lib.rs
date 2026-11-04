@@ -1056,15 +1056,31 @@ pub fn build_stat_packet(
     let elapsed_secs = st.elapsed.as_secs() as u32;
     let jiffies = start_epoch.elapsed().as_millis() as u32;
 
-    let bytes_received = match st.state {
-        PlayerState::Play => (elapsed_ms as u64).saturating_mul(176),
-        _ => 0,
+    let telemetry = kiiaud_decoder::stream::get_stream_telemetry();
+
+    let bytes_received = if telemetry.total_bytes_read > 0 {
+        telemetry.total_bytes_read
+    } else {
+        match st.state {
+            PlayerState::Play => (elapsed_ms as u64).saturating_mul(176),
+            _ => 0,
+        }
     };
 
-    let (stream_buf_fullness, output_buf_fullness) = match st.state {
-        PlayerState::Play => (1024 * 1024u32, 256 * 1024u32),
-        PlayerState::Pause => (1024 * 1024u32, 0u32),
-        PlayerState::Stop => (0u32, 0u32),
+    let (stream_buf_fullness, stream_buf_size) = if telemetry.buffer_capacity > 0 {
+        (telemetry.buffer_occupancy, telemetry.buffer_capacity)
+    } else {
+        match st.state {
+            PlayerState::Play => (1024 * 1024u32, 4 * 1024 * 1024u32),
+            PlayerState::Pause => (1024 * 1024u32, 4 * 1024 * 1024u32),
+            PlayerState::Stop => (0u32, 4 * 1024 * 1024u32),
+        }
+    };
+
+    let output_buf_fullness = match st.state {
+        PlayerState::Play => 256 * 1024u32,
+        PlayerState::Pause => 0u32,
+        PlayerState::Stop => 0u32,
     };
 
     let mut body = Vec::with_capacity(53);
@@ -1072,7 +1088,7 @@ pub fn build_stat_packet(
     body.push(0); // 4: num_crlf
     body.push(0); // 5: mas_initialized
     body.push(0); // 6: mas_mode
-    body.extend_from_slice(&(4 * 1024 * 1024u32).to_be_bytes()); // 7..11: stream buffer size (4 MiB)
+    body.extend_from_slice(&stream_buf_size.to_be_bytes()); // 7..11: stream buffer size
     body.extend_from_slice(&stream_buf_fullness.to_be_bytes()); // 11..15: stream buffer fullness
     body.extend_from_slice(&bytes_received.to_be_bytes()); // 15..23: bytes received
     body.extend_from_slice(&0xffffu16.to_be_bytes()); // 23..25: signal strength (0xffff = Ethernet/wired in Squeezelite)
@@ -1171,6 +1187,7 @@ async fn handle_slimproto_server_packet(
                         "LMS SlimProto strm-s start command received"
                     );
 
+                    kiiaud_decoder::stream::reset_stream_telemetry();
                     let _ = engine
                         .send(PlaybackCommand::Load {
                             source,
@@ -1207,6 +1224,7 @@ async fn handle_slimproto_server_packet(
                     ));
                 }
                 b'f' => {
+                    kiiaud_decoder::stream::reset_stream_telemetry();
                     replies.push(build_stat_packet(b"STMf", engine, start_epoch, 0));
                 }
                 _ => {}
