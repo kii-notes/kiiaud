@@ -26,25 +26,20 @@ Allows users browsing media in Jellyfin (Web, Mobile App, TV) to select `kiiaud`
 
 ---
 
-## 2. LMS / Lyrion Music Server Adapter (SlimProto & Lyrion Anywhere Gateway)
+## 2. LMS / Lyrion Music Server Adapter (SlimProto LAN)
 
 ### Purpose
-Allows `kiiaud` to act as an audiophile-grade Squeezebox endpoint (analogous to a modern, pure-Rust implementation of [ralph-irving/squeezelite](https://github.com/ralph-irving/squeezelite)), controlled directly by Lyrion Music Server (LMS) on the local LAN (`DirectTcp`) or remotely over the Internet through a [Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere) (`AnywhereWs`).
+Allows `kiiaud` to act as an audiophile-grade Squeezebox endpoint (analogous to a modern, pure-Rust implementation of [ralph-irving/squeezelite](https://github.com/ralph-irving/squeezelite)), controlled directly by Lyrion Music Server (LMS) on the local LAN (`DirectTcp`).
 
-### Operating Modes (Hot-Reloadable at Runtime)
-1. **`DirectTcp` (LAN SlimProto on TCP port 3483)**:
-   - Connects directly to LMS on TCP port 3483 and fetches audio streams from `http://<lms_host>:<http_port>/stream.mp3?...`.
-   - Sends `HELO` with configured `mac_address` and `SETD` with `player_name`.
-2. **`AnywhereWs` (Remote Lyrion Anywhere Gateway — Protocol v2)**:
-   - Enabled when `use_gateway = true` (checkbox in WebUI or `kiiaud.toml`).
-   - **Authentication during configuration (`POST /api/lms/gateway-auth`)**: Supports one-time pairing codes (`ABCDEFGHJK`), `lyrion-anywhere://pair?...` links, or username + password (+ optional 2FA/TOTP). Exchanges credentials for a long-lived `gateway_refresh_token` and automatically rotates access tokens every 10 minutes via `POST /v1/auth/refresh`.
-   - **WebSocket SlimProto Tunnel (`WS /v1/player`)**: Sends `{"token","protocol":2,"quality":"original"|"high"|"low","keepalive":true}`, receives the Gateway Greeting (`session`, `mac`, `name`), and adopts the Gateway-assigned MAC in `HELO`.
-   - **Gateway Audio Stream & Flow Control**: Rewrites `strm-s` audio requests to `GET <gateway_url>/v1/stream/<session>/<seq>` with `Authorization: Bearer <access_token>` and emits `{"ack":{"stream":<seq>,"bytes":<total>}}` every 256 KiB read so the Gateway's 4 MiB replay window advances smoothly.
-   - **Signal Path Metadata**: Parses Gateway `{"stream":{...}}` messages to display the served codec/rate and whether the stream is in `Bit-Perfect Passthrough` mode.
+### Operating Mode & Protocol (`DirectTcp`)
+- Connects directly to LMS on TCP port 3483 and fetches audio streams from `http://<lms_host>:<http_port>/stream.mp3?...`.
+- Sends `HELO` with configured `mac_address` and `SETD` with `player_name`.
+- Configured in `[adapter.lms]` (`enabled = true / false`).
+- Hot-reloadable at runtime via `reload_lms_adapter()`.
 
 ### Workflow & Protocol (SlimProto)
 1. **Discovery & Hello (`HELO`)**:
-   - Connects to LMS on port 3483 (or over the Gateway WSS tunnel).
+   - Connects to LMS on port 3483.
    - Sends a `HELO` packet advertising capabilities: MAC address, supported formats, buffer sizes, and flags (`CanHTTPS=1,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1,ModelName={player_name}`).
    - **DSD-First Format Ordering**: When the active output backend supports DSD, format capabilities are ordered with DSD formats first (`dsf,dff,flc,mp3,pcm,...`). This ensures LMS does not transcode DSF/DFF tracks to PCM when serving audio to `kiiaud`, delivering bit-perfect native DSD streams directly.
 2. **Stream Command (`strm`) & Response Protocol**:
@@ -58,7 +53,30 @@ Allows `kiiaud` to act as an audiophile-grade Squeezebox endpoint (analogous to 
    - Sends `STMs` once audio output starts (`TrackStarted`), `STMd` (DECODE_READY) on end of track for gapless transitions, and `STMu` on underrun/stop.
    - Reports progressive `bytes_received` and 1-second interval `STMt` during active playback (`Play`), maintaining clock synchronization without idle spamming.
 4. **Audio Data**:
-   - Audio chunks delivered from LMS are decoded and queued into `kiiaud`'s playback pipeline for bit-perfect output to ALSA.
+   - Audio chunks delivered from LMS are decoded and queued into `kiiaud`'s playback pipeline for bit-perfect output.
+
+---
+
+## 2B. Lyrion Anywhere Gateway Adapter (`lag`)
+
+### Purpose
+Provides remote access to LMS servers over the Internet via [Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere) (`AnywhereWs` Protocol v2). It runs completely independently from the local LMS adapter, allowing users to enable or disable either service as needed, or run both concurrently.
+
+### Architecture & Capabilities
+- **Independent Configuration (`[adapter.lag]`)**:
+  - `enabled = true / false`: Toggles remote Gateway connectivity without affecting local LAN LMS settings.
+- **Authentication (`POST /api/lag/gateway-auth`)**:
+  - Supports one-time pairing codes (`ABCDEFGHJK`), `lyrion-anywhere://pair?...` links, or username + password (+ optional 2FA/TOTP).
+  - Exchanges credentials for a 90-day `gateway_refresh_token` and automatically rotates access tokens every 10 minutes via `POST /v1/auth/refresh`.
+- **WebSocket SlimProto Tunnel (`WS /v1/player`)**:
+  - Sends `{"token","protocol":2,"quality":"original"|"high"|"low","keepalive":true}`, receives the Gateway Greeting (`session`, `mac`, `name`), and adopts the Gateway-assigned virtual MAC in `HELO`.
+- **Flow Control & Audio Streaming**:
+  - Rewrites `strm-s` requests to `GET <gateway_url>/v1/stream/<session>/<seq>` with Bearer authentication.
+  - Emits `{"ack":{"stream":<seq>,"bytes":<total>}}` flow-control packets every 256 KiB read so the Gateway's 4 MiB ring-buffer window advances smoothly.
+- **Audiophile Signal Path Reporting**:
+  - Emits real-time stream metadata indicating codec, rate, and whether `Bit-Perfect Passthrough` mode (`original`) is active.
+- **Hot-Reloadable**:
+  - Changes applied via WebUI or API take effect immediately via `reload_lag_adapter()`.
 
 > [!NOTE]
 > For a detailed technical post-mortem on LMS connection stability and SlimProto sequence alignment with Squeezelite, refer to [TROUBLESHOOTING-LMS.md](TROUBLESHOOTING-LMS.md).
@@ -170,10 +188,16 @@ Returns a complete JSON snapshot of current playback state, audio format badge, 
   "queue": [...],
   "config": {...},
   "lms_runtime": {
+    "enabled": false,
+    "connected": false,
+    "endpoint": "192.168.1.100:3483",
+    "active_mac": "02:4b:49:49:41:55",
+    "active_name": "kiiaud Squeezebox",
+    "last_error": null
+  },
+  "lag_runtime": {
     "enabled": true,
-    "use_gateway": true,
     "connected": true,
-    "mode": "AnywhereWs",
     "endpoint": "https://music.example.com",
     "active_mac": "02:a1:b2:c3:d4:e5",
     "active_name": "kiiaud Office DAC",
@@ -245,10 +269,10 @@ Browses audio files and folders within configured `security.allowed_roots` witho
 
 #### 6. `GET /api/config` & `POST /api/config`
 Reads or persists changes to `kiiaud.toml` (e.g. updating output device, DSD mode, buffer time, or enabling/disabling protocol adapters).
-- **Live LMS Hot-Reload**: Saving changes to `[adapter.lms]` via `POST /api/config` immediately calls `reload_lms_adapter()`, switching between `DirectTcp` and `AnywhereWs` (or updating host/gateway quality) on the fly without restarting the `kiiaud` daemon.
+- **Live LMS & LAG Hot-Reload**: Saving changes to `[adapter.lms]` or `[adapter.lag]` via `POST /api/config` immediately calls `reload_lms_adapter()` and `reload_lag_adapter()` respectively, updating hosts, tokens, or stream quality on the fly without restarting the `kiiaud` daemon.
 
-#### 7. `POST /api/lms/gateway-auth`
-Performs interactive Lyrion Anywhere Gateway authentication and device pairing right from the WebUI configuration screen, persists the resulting `gateway_refresh_token` to `kiiaud.toml`, and hot-reloads the LMS adapter into `AnywhereWs` mode:
+#### 7. `POST /api/lag/gateway-auth` *(or `/api/lms/gateway-auth` for legacy compatibility)*
+Performs interactive Lyrion Anywhere Gateway authentication and device pairing right from the WebUI configuration screen, persists the resulting `gateway_refresh_token` to `kiiaud.toml` (under `[adapter.lag]`), and hot-reloads the Gateway adapter:
 ```json
 // 1. Pair using a 10-character one-time code or lyrion-anywhere://pair?... URL
 {
@@ -274,6 +298,7 @@ Performs interactive Lyrion Anywhere Gateway authentication and device pairing r
 {
   "action": "logout"
 }
+```
 ```
 
 

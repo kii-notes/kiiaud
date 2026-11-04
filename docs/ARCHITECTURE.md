@@ -358,6 +358,12 @@ enabled = true
 server_host = "lms.local"
 player_name = "kiiaud Squeezebox"
 
+[adapter.lag]
+enabled = false
+gateway_url = "https://music.example.com"
+gateway_quality = "original"
+player_name = "kiiaud Anywhere"
+
 [adapter.mpd]
 enabled = true
 listen = "0.0.0.0:6600"

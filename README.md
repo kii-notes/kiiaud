@@ -15,7 +15,8 @@ The central design principle is:
 Controllers and stream sources may include:
 - **Hi-Fi WebUI**: Embedded browser-based control dashboard and signal path monitor on port `7110`;
 - **Jellyfin**: Remote Control / "Play To" endpoint;
-- **LMS / Lyrion Music Server**: Dual-mode SlimProto client — local LAN (`DirectTcp` port 3483, functioning similarly to `squeezelite`) and remote Internet via **[Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere)** (`AnywhereWs` HTTPS/WSS tunnel with bit-perfect `original` passthrough);
+- **LMS / Lyrion Music Server (LAN)**: SlimProto client for local network (`DirectTcp` port 3483, functioning similarly to `squeezelite`);
+- **Lyrion Anywhere (Gateway)**: Independent remote internet streaming adapter (`[adapter.lag]`) connecting to **[Lyrion Anywhere Gateway](https://github.com/JameZUK/lyrion-anywhere)** via WebSocket tunnel (`WSS /v1/player`) with bit-perfect `original` passthrough;
 - **MPD clients**: `mpc`, Cantata, MAF, Ymuse...;
 - **CLI / Local IPC / REST**: local scripting and automation (`kiiaudctl`).
 
@@ -74,7 +75,7 @@ Local filesystems or remote servers (Jellyfin, LMS) remain the source of truth f
 
 The playback engine and audio pipeline form the core product.
 
-Jellyfin, LMS (Lyrion), MPD, WebUI, and CLI are modular protocol and source adapters. None of them defines the identity of `kiiaud`.
+Jellyfin, LMS (LAN), Lyrion Anywhere Gateway (LAG), MPD, WebUI, and CLI are modular protocol and source adapters. None of them defines the identity of `kiiaud`.
 
 ## 4. Key properties
 
