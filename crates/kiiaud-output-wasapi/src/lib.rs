@@ -24,7 +24,9 @@ use windows::{
         Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
         Media::Audio::{
             AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE, IAudioClient,
+            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            DEVICE_STATE_ACTIVE, IAudioClient,
             IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
             WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eConsole, eRender,
         },
@@ -153,6 +155,10 @@ pub struct WasapiAudioOutput {
     bytes_per_frame: usize,
     #[cfg(target_os = "windows")]
     is_playing: bool,
+    #[cfg(target_os = "windows")]
+    is_shared: bool,
+    #[cfg(target_os = "windows")]
+    is_adaptive_fallback: bool,
 
     active_format: Option<AudioFormat>,
     dop_encoder: Option<DopEncoder>,
@@ -181,6 +187,10 @@ impl WasapiAudioOutput {
             bytes_per_frame: 0,
             #[cfg(target_os = "windows")]
             is_playing: false,
+            #[cfg(target_os = "windows")]
+            is_shared: false,
+            #[cfg(target_os = "windows")]
+            is_adaptive_fallback: false,
 
             active_format: None,
             dop_encoder: None,
@@ -232,8 +242,8 @@ impl AudioOutput for WasapiAudioOutput {
         let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|e| KiiaudError::Output(format!("Failed to activate IAudioClient: {e}")))?;
 
-        // 4. Negotiate bit-perfect format
-        let (negotiated_format, selected_fmt, wave_ext) = match *format {
+        // 4. Negotiate bit-perfect format (with adaptive shared fallback if exclusive mode unsupported)
+        let (negotiated_format, selected_fmt, wave_ext, is_fallback) = match *format {
             AudioFormat::Pcm {
                 sample_rate,
                 channels,
@@ -283,11 +293,23 @@ impl AudioOutput for WasapiAudioOutput {
                     }
                 }
 
-                let (cand, wfx) = matched.ok_or_else(|| {
-                    KiiaudError::UnsupportedFormat(format!(
-                        "No compatible bit-perfect WASAPI format found for {sample_format} at {sample_rate} Hz"
-                    ))
-                })?;
+                let (cand, wfx, is_fallback) = match matched {
+                    Some((c, w)) => (c, w, false),
+                    None => {
+                        // Adaptive Fallback: DAC hardware does not natively support sample_rate in Exclusive Mode.
+                        // Engage WASAPI Shared Mode with automatic high-quality PCM resampling (AUTOCONVERTPCM).
+                        tracing::warn!(
+                            device = %self.config.device,
+                            sample_rate,
+                            sample_format = %sample_format,
+                            "DAC does not natively support {}Hz in WASAPI Exclusive Mode; engaging adaptive shared mode fallback with automatic resampling",
+                            sample_rate
+                        );
+                        let fallback_cand = candidates[0];
+                        let wfx = make_waveformat(fallback_cand, sample_rate, channels);
+                        (fallback_cand, wfx, true)
+                    }
+                };
 
                 self.dop_encoder = None;
 
@@ -305,7 +327,7 @@ impl AudioOutput for WasapiAudioOutput {
                     sample_format: hw_sf,
                     bits_per_sample,
                 };
-                (actual, cand, wfx)
+                (actual, cand, wfx, is_fallback)
             }
             AudioFormat::Dsd {
                 rate,
@@ -359,7 +381,7 @@ impl AudioOutput for WasapiAudioOutput {
                     bit_order,
                     layout,
                 };
-                (actual, cand, wfx)
+                (actual, cand, wfx, false)
             }
         };
 
@@ -372,20 +394,41 @@ impl AudioOutput for WasapiAudioOutput {
         // Duration in 100ns units:
         let requested_period = (self.config.period_time_ms as i64 * 10_000).max(min_period);
 
-        // 6. Initialize AudioClient with Exclusive Event-Driven mode
+        // 6. Initialize AudioClient with Exclusive or Adaptive Shared Event-Driven mode
+        let share_mode = if is_fallback {
+            AUDCLNT_SHAREMODE_SHARED
+        } else {
+            AUDCLNT_SHAREMODE_EXCLUSIVE
+        };
+
+        let stream_flags = if is_fallback {
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+        } else {
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        };
+
+        let periodicity = if is_fallback { 0 } else { requested_period };
+        let buffer_duration = if is_fallback {
+            (self.config.buffer_time_ms as i64 * 10_000).max(default_period)
+        } else {
+            requested_period
+        };
+
         let mut init_res = unsafe {
             client.Initialize(
-                AUDCLNT_SHAREMODE_EXCLUSIVE,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                requested_period,
-                requested_period,
+                share_mode,
+                stream_flags,
+                buffer_duration,
+                periodicity,
                 &wave_ext.Format as *const _,
                 None,
             )
         };
 
         if let Err(ref e) = init_res {
-            if e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED {
+            if !is_fallback && e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED {
                 let aligned_frames = unsafe { client.GetBufferSize() }.map_err(|e| {
                     KiiaudError::Output(format!("Failed to get aligned buffer size: {e}"))
                 })?;
@@ -420,8 +463,13 @@ impl AudioOutput for WasapiAudioOutput {
         }
 
         if let Err(e) = init_res {
+            let mode_str = if is_fallback {
+                "Shared (Adaptive Fallback)"
+            } else {
+                "Exclusive"
+            };
             return Err(KiiaudError::Output(format!(
-                "Failed to initialize WASAPI Exclusive mode on device '{}': {e}",
+                "Failed to initialize WASAPI {mode_str} mode on device '{}': {e}",
                 self.config.device
             )));
         }
@@ -472,8 +520,10 @@ impl AudioOutput for WasapiAudioOutput {
             channels,
             buffer_frames,
             bytes_per_frame,
-            bit_perfect = true,
-            "WASAPI Exclusive Mode stream opened and started"
+            bit_perfect = self.config.bit_perfect && !is_fallback,
+            adaptive_fallback = is_fallback,
+            share_mode = if is_fallback { "shared" } else { "exclusive" },
+            "WASAPI audio stream successfully opened and started"
         );
 
         self.client = Some(client);
@@ -484,6 +534,8 @@ impl AudioOutput for WasapiAudioOutput {
         self.buffer_frames = buffer_frames;
         self.bytes_per_frame = bytes_per_frame;
         self.is_playing = true;
+        self.is_shared = is_fallback;
+        self.is_adaptive_fallback = is_fallback;
         self.active_format = Some(negotiated_format);
         self.fifo_buffer.clear();
 
@@ -491,7 +543,8 @@ impl AudioOutput for WasapiAudioOutput {
     }
 
     fn write(&mut self, buffer: &AudioBuffer) -> Result<usize> {
-        let (Some(render_client), Some(event_handle), Some(hw_fmt)) = (
+        let (Some(client), Some(render_client), Some(event_handle), Some(hw_fmt)) = (
+            self.client.as_ref(),
             self.render_client.as_ref(),
             self.event_handle,
             self.hw_format,
@@ -527,31 +580,68 @@ impl AudioOutput for WasapiAudioOutput {
             return Ok(buffer.frames());
         }
 
-        while self.fifo_buffer.len() >= period_bytes {
-            // Wait for WASAPI driver event (timeout 2 seconds)
-            let wait_res = unsafe { WaitForSingleObject(event_handle, 2000) };
-            if wait_res != WAIT_OBJECT_0 {
-                tracing::warn!(
-                    wait_code = wait_res.0,
-                    "WASAPI WaitForSingleObject timeout or interruption"
-                );
+        if self.is_shared {
+            while !self.fifo_buffer.is_empty() {
+                let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
+                let available_frames = self.buffer_frames.saturating_sub(padding);
+                if available_frames == 0 {
+                    let wait_res = unsafe { WaitForSingleObject(event_handle, 2000) };
+                    if wait_res != WAIT_OBJECT_0 {
+                        tracing::warn!(
+                            wait_code = wait_res.0,
+                            "WASAPI shared WaitForSingleObject timeout or interruption"
+                        );
+                        break;
+                    }
+                    continue;
+                }
+
+                let frames_to_write =
+                    ((self.fifo_buffer.len() / self.bytes_per_frame) as u32).min(available_frames);
+                if frames_to_write == 0 {
+                    break;
+                }
+                let bytes_to_write = (frames_to_write as usize) * self.bytes_per_frame;
+
+                let p_buffer = unsafe { render_client.GetBuffer(frames_to_write) }.map_err(|e| {
+                    KiiaudError::Output(format!("WASAPI shared GetBuffer failed: {e}"))
+                })?;
+
+                unsafe {
+                    std::ptr::copy_nonoverlapping(self.fifo_buffer.as_ptr(), p_buffer, bytes_to_write);
+                    render_client.ReleaseBuffer(frames_to_write, 0)
+                }
+                .map_err(|e| KiiaudError::Output(format!("WASAPI shared ReleaseBuffer failed: {e}")))?;
+
+                self.fifo_buffer.drain(0..bytes_to_write);
             }
+        } else {
+            while self.fifo_buffer.len() >= period_bytes {
+                // Wait for WASAPI driver event (timeout 2 seconds)
+                let wait_res = unsafe { WaitForSingleObject(event_handle, 2000) };
+                if wait_res != WAIT_OBJECT_0 {
+                    tracing::warn!(
+                        wait_code = wait_res.0,
+                        "WASAPI WaitForSingleObject timeout or interruption"
+                    );
+                }
 
-            let p_buffer = unsafe { render_client.GetBuffer(self.buffer_frames) }.map_err(|e| {
-                KiiaudError::Output(format!(
-                    "WASAPI GetBuffer({}) failed: {e}",
-                    self.buffer_frames
-                ))
-            })?;
+                let p_buffer = unsafe { render_client.GetBuffer(self.buffer_frames) }.map_err(|e| {
+                    KiiaudError::Output(format!(
+                        "WASAPI GetBuffer({}) failed: {e}",
+                        self.buffer_frames
+                    ))
+                })?;
 
-            unsafe {
-                std::ptr::copy_nonoverlapping(self.fifo_buffer.as_ptr(), p_buffer, period_bytes);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(self.fifo_buffer.as_ptr(), p_buffer, period_bytes);
+                }
+
+                unsafe { render_client.ReleaseBuffer(self.buffer_frames, 0) }
+                    .map_err(|e| KiiaudError::Output(format!("WASAPI ReleaseBuffer failed: {e}")))?;
+
+                self.fifo_buffer.drain(0..period_bytes);
             }
-
-            unsafe { render_client.ReleaseBuffer(self.buffer_frames, 0) }
-                .map_err(|e| KiiaudError::Output(format!("WASAPI ReleaseBuffer failed: {e}")))?;
-
-            self.fifo_buffer.drain(0..period_bytes);
         }
 
         Ok(buffer.frames())
@@ -578,31 +668,69 @@ impl AudioOutput for WasapiAudioOutput {
     }
 
     fn drain(&mut self) -> Result<()> {
-        let (Some(render_client), Some(event_handle)) =
-            (self.render_client.as_ref(), self.event_handle)
+        let (Some(client), Some(render_client), Some(event_handle)) =
+            (self.client.as_ref(), self.render_client.as_ref(), self.event_handle)
         else {
             return Ok(());
         };
 
-        let period_bytes = (self.buffer_frames as usize) * self.bytes_per_frame;
-        if period_bytes > 0 && !self.fifo_buffer.is_empty() {
-            // Pad remaining frames with zeros
-            if self.fifo_buffer.len() < period_bytes {
-                self.fifo_buffer.resize(period_bytes, 0);
-            }
-
-            let _ = unsafe { WaitForSingleObject(event_handle, 2000) };
-            if let Ok(p_buffer) = unsafe { render_client.GetBuffer(self.buffer_frames) } {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        self.fifo_buffer.as_ptr(),
-                        p_buffer,
-                        period_bytes,
-                    );
-                    let _ = render_client.ReleaseBuffer(self.buffer_frames, 0);
+        if self.is_shared {
+            while !self.fifo_buffer.is_empty() {
+                let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
+                let available_frames = self.buffer_frames.saturating_sub(padding);
+                if available_frames == 0 {
+                    let _ = unsafe { WaitForSingleObject(event_handle, 500) };
+                    continue;
+                }
+                let frames_to_write =
+                    ((self.fifo_buffer.len() / self.bytes_per_frame) as u32).min(available_frames);
+                if frames_to_write == 0 {
+                    break;
+                }
+                let bytes_to_write = (frames_to_write as usize) * self.bytes_per_frame;
+                if let Ok(p_buffer) = unsafe { render_client.GetBuffer(frames_to_write) } {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            self.fifo_buffer.as_ptr(),
+                            p_buffer,
+                            bytes_to_write,
+                        );
+                        let _ = render_client.ReleaseBuffer(frames_to_write, 0);
+                    }
+                    self.fifo_buffer.drain(0..bytes_to_write);
+                } else {
+                    break;
                 }
             }
-            self.fifo_buffer.clear();
+            // Wait briefly for buffer to finish rendering
+            for _ in 0..10 {
+                let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
+                if padding == 0 {
+                    break;
+                }
+                let _ = unsafe { WaitForSingleObject(event_handle, 50) };
+            }
+        } else {
+            let period_bytes = (self.buffer_frames as usize) * self.bytes_per_frame;
+            if period_bytes > 0 && !self.fifo_buffer.is_empty() {
+                // Pad remaining frames with zeros
+                if self.fifo_buffer.len() < period_bytes {
+                    self.fifo_buffer.resize(period_bytes, 0);
+                }
+
+                let _ = unsafe { WaitForSingleObject(event_handle, 2000) };
+                if let Ok(p_buffer) = unsafe { render_client.GetBuffer(self.buffer_frames) } {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            self.fifo_buffer.as_ptr(),
+                            p_buffer,
+                            period_bytes,
+                        );
+                        let _ = render_client.ReleaseBuffer(self.buffer_frames, 0);
+                    }
+                }
+                self.fifo_buffer.clear();
+            }
         }
 
         Ok(())
@@ -630,19 +758,25 @@ impl AudioOutput for WasapiAudioOutput {
         self.active_format = None;
         self.dop_encoder = None;
         self.fifo_buffer.clear();
+        self.is_shared = false;
+        self.is_adaptive_fallback = false;
         Ok(())
     }
 
     fn capabilities(&self) -> OutputCapabilities {
         OutputCapabilities {
-            backend_name: "WASAPI Exclusive Mode".to_owned(),
+            backend_name: if self.is_shared {
+                "WASAPI Shared Mode (Adaptive Resampling)".to_owned()
+            } else {
+                "WASAPI Exclusive Mode".to_owned()
+            },
             device_name: "WASAPI Audio Device".to_owned(),
             sample_rates: vec![44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
             unsupported_rates: Vec::new(),
             bit_depths: vec![16, 24, 32],
             channels: 2,
-            exclusive: true,
-            bit_perfect: self.config.bit_perfect,
+            exclusive: !self.is_shared,
+            bit_perfect: self.config.bit_perfect && !self.is_shared,
             adaptive_fallback: true,
             dsd_native: false,
             dsd_dop: true,

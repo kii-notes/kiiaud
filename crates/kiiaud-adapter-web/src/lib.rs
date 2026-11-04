@@ -263,6 +263,11 @@ pub fn build_state_snapshot(ctx: &WebServerContext) -> WebStateSnapshot {
                 "Bit-Perfect Passthrough ({} • Resampling OFF • Software Volume DSP OFF)",
                 caps.backend_name
             )
+        } else if caps.adaptive_fallback {
+            format!(
+                "Adaptive Fallback ({} • Resampling Active)",
+                caps.backend_name
+            )
         } else {
             format!(
                 "Standard Output Path ({} • Shared Mixer • System Resampling Active)",
@@ -287,14 +292,25 @@ pub fn build_state_snapshot(ctx: &WebServerContext) -> WebStateSnapshot {
             cfg.output.buffer_time_ms,
             cfg.output.period_time_ms
         ),
-        Some(AudioFormat::Pcm { sample_format, .. }) => format!(
-            "{} ({}) • Hardware Format {} • Buffer {}ms / Period {}ms",
-            cfg.output.backend.to_ascii_uppercase(),
-            cfg.output.device,
-            sample_format,
-            cfg.output.buffer_time_ms,
-            cfg.output.period_time_ms
-        ),
+        Some(AudioFormat::Pcm { sample_format, .. }) => {
+            let mode_str = if let Some(caps) = &st.output_capabilities {
+                if !caps.exclusive {
+                    "Shared Mode"
+                } else {
+                    "Exclusive Mode"
+                }
+            } else {
+                "Exclusive Mode"
+            };
+            format!(
+                "{} ({}) • {mode_str} • Hardware Format {} • Buffer {}ms / Period {}ms",
+                cfg.output.backend.to_ascii_uppercase(),
+                cfg.output.device,
+                sample_format,
+                cfg.output.buffer_time_ms,
+                cfg.output.period_time_ms
+            )
+        }
         None => format!(
             "{} ({}) • Ready (DSD mode: {:?})",
             cfg.output.backend.to_ascii_uppercase(),

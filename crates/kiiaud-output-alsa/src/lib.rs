@@ -98,7 +98,13 @@ impl AudioOutput for AlsaAudioOutput {
     }
 
     fn capabilities(&self) -> OutputCapabilities {
-        self.capabilities.clone()
+        let mut caps = self.capabilities.clone();
+        if self.is_adaptive_fallback {
+            caps.bit_perfect = false;
+            caps.exclusive = false;
+            caps.backend_name = "ALSA Adaptive Resampling (plughw:)".to_owned();
+        }
+        caps
     }
 }
 
@@ -596,7 +602,13 @@ impl AudioOutput for AlsaAudioOutput {
     }
 
     fn capabilities(&self) -> OutputCapabilities {
-        self.capabilities.clone()
+        let mut caps = self.capabilities.clone();
+        if self.is_adaptive_fallback {
+            caps.bit_perfect = false;
+            caps.exclusive = false;
+            caps.backend_name = "ALSA Adaptive Resampling (plughw:)".to_owned();
+        }
+        caps
     }
 }
 

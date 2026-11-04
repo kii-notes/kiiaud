@@ -12,8 +12,9 @@
 //!   cleanly without crashing the daemon.
 
 use kiiaud_core::{
-    AudioFormat, CommandSender, EventReceiver, EventSender, KiiaudConfig, KiiaudError, PathPolicy,
-    PlaybackCommand, PlaybackEvent, PlaybackItem, PlayerState, PlayerStatus, Queue,
+    AudioFormat, CommandSender, EventReceiver, EventSender, KiiaudConfig, KiiaudError,
+    OutputCapabilities, PathPolicy, PlaybackCommand, PlaybackEvent, PlaybackItem, PlayerState,
+    PlayerStatus, Queue,
 };
 use kiiaud_decoder::{Decoder, SymphoniaAudioDecoder};
 use kiiaud_output::{AudioOutput, MockAudioOutput};
@@ -49,6 +50,7 @@ enum WorkerNotice {
         item: PlaybackItem,
         format: AudioFormat,
         duration: Option<Duration>,
+        capabilities: OutputCapabilities,
     },
     Position {
         elapsed: Duration,
@@ -58,6 +60,7 @@ enum WorkerNotice {
         item: PlaybackItem,
         format: AudioFormat,
         duration: Option<Duration>,
+        capabilities: OutputCapabilities,
     },
     TrackFinished {
         id: u32,
@@ -570,6 +573,7 @@ impl PlaybackEngine {
                 mut item,
                 format,
                 duration,
+                capabilities,
             } => {
                 item.duration = duration;
                 self.handle
@@ -584,6 +588,7 @@ impl PlaybackEngine {
                     st.duration = duration;
                     st.elapsed = Duration::ZERO;
                     st.format = Some(format);
+                    st.output_capabilities = Some(capabilities);
                 }
                 let _ = self
                     .handle
@@ -615,6 +620,7 @@ impl PlaybackEngine {
                 mut item,
                 format,
                 duration,
+                capabilities,
             } => {
                 // Advance queue cursor to match the gapless transition
                 let (repeat, single, consume) = {
@@ -640,6 +646,7 @@ impl PlaybackEngine {
                     st.duration = duration;
                     st.elapsed = Duration::ZERO;
                     st.format = Some(format);
+                    st.output_capabilities = Some(capabilities);
                 }
                 self.refresh_next_candidate();
                 let _ = self
@@ -827,12 +834,14 @@ fn audio_worker_loop(
                     match output.open(&next_dec.format()) {
                         Ok(neg_fmt) => {
                             let dur = next_dec.duration();
+                            let caps = output.capabilities();
                             elapsed_frames = 0;
                             last_pos_report = Instant::now();
                             let _ = notice_tx.send(WorkerNotice::GaplessTransitioned {
                                 item: next_item.clone(),
                                 format: neg_fmt,
                                 duration: dur,
+                                capabilities: caps,
                             });
                             current_decoder = Some((next_item, next_dec, neg_fmt));
                             continue;
@@ -896,10 +905,12 @@ fn handle_worker_cmd(
                 Ok(dec) => match output.open(&dec.format()) {
                     Ok(neg_fmt) => {
                         let duration = dec.duration();
+                        let caps = output.capabilities();
                         let _ = notice_tx.send(WorkerNotice::TrackStarted {
                             item: item.clone(),
                             format: neg_fmt,
                             duration,
+                            capabilities: caps,
                         });
                         *current_decoder = Some((item, dec, neg_fmt));
                     }

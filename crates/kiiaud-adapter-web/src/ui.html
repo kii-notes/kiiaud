@@ -128,6 +128,12 @@
       color: #fbbf24;
     }
 
+    .badge.warning {
+      border-color: rgba(245, 158, 11, 0.45);
+      background: var(--gold-glow);
+      color: #fbbf24;
+    }
+
     .dot {
       width: 7px;
       height: 7px;
@@ -1066,8 +1072,28 @@
       const cfg = data.config;
 
       document.getElementById('hdr-daemon-name').textContent = cfg.daemon.name || 'kiiaud';
-      document.getElementById('bp-badge').textContent =
-        cfg.output.bit_perfect ? 'BIT-PERFECT: ON' : 'BIT-PERFECT: OFF';
+      const bpBadge = document.getElementById('bp-badge');
+      if (bpBadge) {
+        const caps = st.output_capabilities;
+        if ((st.state === 'play' || st.state === 'pause') && caps) {
+          if (caps.bit_perfect) {
+            bpBadge.className = 'badge bitperfect';
+            bpBadge.textContent = 'BIT-PERFECT: DIRECT';
+          } else if (caps.adaptive_fallback && !caps.exclusive) {
+            bpBadge.className = 'badge warning';
+            bpBadge.textContent = 'ADAPTIVE: RESAMPLED';
+          } else if (!caps.bit_perfect) {
+            bpBadge.className = 'badge';
+            bpBadge.textContent = 'MIXER: SHARED';
+          } else {
+            bpBadge.className = 'badge';
+            bpBadge.textContent = 'BIT-PERFECT: OFF';
+          }
+        } else {
+          bpBadge.className = cfg.output.bit_perfect ? 'badge bitperfect' : 'badge';
+          bpBadge.textContent = cfg.output.bit_perfect ? 'BIT-PERFECT: ON' : 'BIT-PERFECT: OFF';
+        }
+      }
       document.getElementById('fmt-badge').textContent = data.format_badge || 'IDLE';
 
       const errBanner = document.getElementById('error-banner');
@@ -1188,7 +1214,10 @@
         if (badge) {
           if (caps.bit_perfect) {
             badge.className = 'badge live';
-            badge.textContent = caps.adaptive_fallback ? 'BIT-PERFECT • ADAPTIVE FALLBACK ON' : 'BIT-PERFECT DIRECT';
+            badge.textContent = 'BIT-PERFECT DIRECT';
+          } else if (caps.adaptive_fallback && !caps.exclusive) {
+            badge.className = 'badge warning';
+            badge.textContent = 'ADAPTIVE FALLBACK (SHARED RESAMPLED)';
           } else {
             badge.className = 'badge';
             badge.textContent = 'STANDARD MIXER';
