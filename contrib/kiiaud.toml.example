@@ -138,4 +138,16 @@ mac_address = [2, 75, 73, 73, 65, 85]
 # When false, LMS automatically transcodes DSD to PCM at <= max_sample_rate:
 # dsd_support = false
 
+[adapter.lag]
+# Lyrion Anywhere (Gateway) adapter.
+# Connects securely to a remote Lyrion Anywhere Gateway over HTTPS / WebSocket tunnel.
+# Useful for remote streaming across the internet or cellular networks.
+enabled = false
+gateway_url = "https://music.example.com"
+gateway_quality = "original" # "original" (bit-perfect passthrough), "high" (Opus 160k), or "low" (Opus 96k)
+player_name = "kiiaud Squeezebox"
+# gateway_username = ""
+# gateway_refresh_token = ""
+# gateway_device_name = ""
+
 

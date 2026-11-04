@@ -886,24 +886,18 @@
             </div>
           </div>
 
+          <!-- LMS SlimProto (LAN) -->
           <label class="checkbox-row">
             <input type="checkbox" id="cfg-lms-enabled" />
-            <strong>LMS / Lyrion SlimProto Adapter (Squeezelite)</strong>
+            <strong>LMS / Lyrion SlimProto Adapter (LAN)</strong>
           </label>
-          <div class="form-group">
-            <label>Player Display Name</label>
-            <input type="text" id="cfg-lms-name" class="input" placeholder="kiiaud Squeezebox" />
-          </div>
-
-          <label class="checkbox-row" style="margin-top: 6px;">
-            <input type="checkbox" id="cfg-lms-use-gateway" onchange="onToggleLmsGatewayMode()" />
-            <span><strong>Connect via Lyrion Anywhere Gateway</strong> (Remote HTTPS/WSS Tunnel)</span>
-          </label>
-
-          <!-- Mode A: DirectTcp (LAN) -->
-          <div id="lms-direct-section" style="margin-top: 8px; padding: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">
+          <div id="lms-section" style="margin-top: 6px; padding: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">
             <div style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 8px; font-family: var(--font-mono);">
               MODE: DirectTcp (LAN SlimProto TCP 3483 + HTTP 9000)
+            </div>
+            <div class="form-group">
+              <label>Player Display Name (LAN)</label>
+              <input type="text" id="cfg-lms-name" class="input" placeholder="kiiaud Squeezebox" />
             </div>
             <div class="grid-2" style="gap: 10px;">
               <div class="form-group" style="margin-bottom: 0;">
@@ -920,23 +914,32 @@
             </div>
           </div>
 
-          <!-- Mode B: AnywhereWs (Lyrion Anywhere Gateway) -->
-          <div id="lms-gateway-section" style="display: none; margin-top: 8px; padding: 12px; background: var(--bg-card); border: 1px solid var(--accent); border-radius: 8px;">
+          <!-- Lyrion Anywhere (Gateway) / lag -->
+          <label class="checkbox-row" style="margin-top: 14px;">
+            <input type="checkbox" id="cfg-lag-enabled" />
+            <strong>Lyrion Anywhere (Gateway)</strong>
+          </label>
+          <div id="lag-section" style="margin-top: 6px; padding: 12px; background: var(--bg-card); border: 1px solid var(--accent); border-radius: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 6px;">
               <span style="font-size: 11.5px; color: var(--accent); font-family: var(--font-mono); font-weight: 600;">
                 MODE: AnywhereWs (WS /v1/player • Protocol v2)
               </span>
-              <span id="lms-gw-auth-badge" class="badge">NOT SIGNED IN</span>
+              <span id="lag-auth-badge" class="badge">NOT SIGNED IN</span>
+            </div>
+
+            <div class="form-group">
+              <label>Player Display Name (Gateway)</label>
+              <input type="text" id="cfg-lag-name" class="input" placeholder="kiiaud Squeezebox" />
             </div>
 
             <div class="grid-2" style="gap: 10px;">
               <div class="form-group">
                 <label>Lyrion Anywhere Gateway URL</label>
-                <input type="text" id="cfg-lms-gw-url" class="input" placeholder="https://music.example.com" />
+                <input type="text" id="cfg-lag-url" class="input" placeholder="https://music.example.com" />
               </div>
               <div class="form-group">
                 <label>Gateway Stream Quality</label>
-                <select id="cfg-lms-gw-quality">
+                <select id="cfg-lag-quality">
                   <option value="original">original (Bit-Perfect Passthrough)</option>
                   <option value="high">high (Opus 160 kbps)</option>
                   <option value="low">low (Opus 96 kbps)</option>
@@ -944,13 +947,13 @@
               </div>
             </div>
 
-            <!-- Gateway Authentication / Pairing Box (performed right during configuration) -->
+            <!-- Gateway Authentication / Pairing Box -->
             <div style="border-top: 1px solid var(--border); padding-top: 10px; margin-top: 4px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                 <span style="font-size: 12px; font-weight: 600; color: var(--text-main);">
                   Gateway Authentication &amp; Device Pairing
                 </span>
-                <button type="button" class="btn btn-sm btn-danger" id="btn-lms-gw-logout" style="display: none;" onclick="lmsGatewayLogout()">
+                <button type="button" class="btn btn-sm btn-danger" id="btn-lag-logout" style="display: none;" onclick="lagGatewayLogout()">
                   Sign Out Gateway
                 </button>
               </div>
@@ -958,20 +961,20 @@
               <div class="form-group" style="margin-bottom: 10px;">
                 <label>Option 1: One-Time Pairing Code or <code>lyrion-anywhere://pair?...</code> Link (Recommended)</label>
                 <div class="input-row">
-                  <input type="text" id="lms-gw-pair-code" class="input" placeholder="ABCDEFGHJK or lyrion-anywhere://pair?..." />
-                  <button type="button" class="btn btn-primary" onclick="lmsGatewayPair()">&#128279; Pair Device</button>
+                  <input type="text" id="lag-pair-code" class="input" placeholder="ABCDEFGHJK or lyrion-anywhere://pair?..." />
+                  <button type="button" class="btn btn-primary" onclick="lagGatewayPair()">&#128279; Pair Device</button>
                 </div>
               </div>
 
               <div class="form-group" style="margin-bottom: 0;">
                 <label>Option 2: Sign In with Account Username &amp; Password</label>
                 <div class="grid-2" style="gap: 8px; margin-bottom: 8px;">
-                  <input type="text" id="lms-gw-username" class="input" placeholder="Username" />
-                  <input type="password" id="lms-gw-password" class="input" placeholder="Password" />
+                  <input type="text" id="lag-username" class="input" placeholder="Username" />
+                  <input type="password" id="lag-password" class="input" placeholder="Password" />
                 </div>
                 <div class="input-row">
-                  <input type="text" id="lms-gw-totp" class="input" placeholder="2FA / TOTP 6-digit code (if enabled)" style="flex: 1;" />
-                  <button type="button" class="btn btn-primary" onclick="lmsGatewayLogin()">&#128274; Sign In Gateway</button>
+                  <input type="text" id="lag-totp" class="input" placeholder="2FA / TOTP 6-digit code (if enabled)" style="flex: 1;" />
+                  <button type="button" class="btn btn-primary" onclick="lagGatewayLogin()">&#128274; Sign In Gateway</button>
                 </div>
               </div>
             </div>
@@ -1149,19 +1152,16 @@
       const pills = document.getElementById('adapter-pills');
       pills.innerHTML = '';
       const lmsRt = data.lms_runtime || {};
-      let lmsInfo = cfg.adapter.lms.player_name;
-      if (cfg.adapter.lms.enabled) {
-        if (cfg.adapter.lms.use_gateway) {
-          lmsInfo = `Lyrion Anywhere (${lmsRt.connected ? 'CONNECTED' : 'CONNECTING'} • ${lmsRt.assigned_name || cfg.adapter.lms.player_name})`;
-        } else {
-          lmsInfo = `DirectTcp (${lmsRt.connected ? 'CONNECTED' : cfg.adapter.lms.server_host} • ${cfg.adapter.lms.player_name})`;
-        }
-      }
+      const lagRt = data.lag_runtime || {};
+      const lagCfg = cfg.adapter.lag || {};
+      const lmsInfo = `DirectTcp (${lmsRt.connected ? 'CONNECTED' : cfg.adapter.lms.server_host} • ${cfg.adapter.lms.player_name})`;
+      const lagInfo = `AnywhereWs (${lagRt.connected ? 'CONNECTED' : 'CONNECTING'} • ${lagRt.assigned_name || lagCfg.player_name || 'kiiaud'})`;
       const adapters = [
         { name: 'WebUI', on: cfg.adapter.web.enabled, info: cfg.adapter.web.listen },
         { name: 'MPD', on: cfg.adapter.mpd.enabled, info: cfg.adapter.mpd.listen },
         { name: 'Jellyfin', on: cfg.adapter.jellyfin.enabled, info: cfg.adapter.jellyfin.device_name },
-        { name: 'LMS/SlimProto', on: cfg.adapter.lms.enabled, info: lmsInfo },
+        { name: 'LMS (LAN)', on: cfg.adapter.lms.enabled, info: lmsInfo },
+        { name: 'Lyrion Anywhere (Gateway)', on: !!lagCfg.enabled, info: lagInfo },
         { name: 'Unix IPC', on: true, info: cfg.daemon.socket_path }
       ];
       adapters.forEach(a => {
@@ -1172,21 +1172,21 @@
       });
 
       // Update Lyrion Anywhere Gateway status badge in Config tab
-      const gwBadge = document.getElementById('lms-gw-auth-badge');
-      const gwLogoutBtn = document.getElementById('btn-lms-gw-logout');
-      const hasToken = !!(cfg.adapter.lms.gateway_refresh_token && cfg.adapter.lms.gateway_refresh_token.trim());
+      const gwBadge = document.getElementById('lag-auth-badge') || document.getElementById('lms-gw-auth-badge');
+      const gwLogoutBtn = document.getElementById('btn-lag-logout') || document.getElementById('btn-lms-gw-logout');
+      const hasToken = !!(lagCfg.gateway_refresh_token && lagCfg.gateway_refresh_token.trim());
       if (gwBadge) {
-        if (lmsRt.connected && lmsRt.mode === 'AnywhereWs') {
+        if (lagRt.connected) {
           gwBadge.className = 'badge live';
-          gwBadge.textContent = `● CONNECTED (${lmsRt.assigned_name || 'Player'} • ${lmsRt.assigned_mac || ''})`;
-        } else if (hasToken || lmsRt.gateway_authenticated) {
+          gwBadge.textContent = `● CONNECTED (${lagRt.assigned_name || 'Player'} • ${lagRt.assigned_mac || ''})`;
+        } else if (hasToken || lagRt.gateway_authenticated) {
           gwBadge.className = 'badge live';
           gwBadge.textContent = '● AUTHENTICATED (Token Saved)';
-        } else if (lmsRt.last_error && cfg.adapter.lms.use_gateway) {
+        } else if (lagRt.last_error && lagCfg.enabled) {
           gwBadge.className = 'badge';
           gwBadge.style.borderColor = 'var(--danger)';
           gwBadge.style.color = '#fca5a5';
-          gwBadge.textContent = '⚠ ' + lmsRt.last_error.slice(0, 48);
+          gwBadge.textContent = '⚠ ' + lagRt.last_error.slice(0, 48);
         } else {
           gwBadge.className = 'badge';
           gwBadge.style.borderColor = '';
@@ -1349,33 +1349,31 @@
         document.getElementById('cfg-jf-url').value = cfg.adapter.jellyfin.server_url;
         document.getElementById('cfg-jf-name').value = cfg.adapter.jellyfin.device_name;
 
+        // LMS (LAN)
         document.getElementById('cfg-lms-enabled').checked = !!cfg.adapter.lms.enabled;
         document.getElementById('cfg-lms-host').value = cfg.adapter.lms.server_host || '';
         document.getElementById('cfg-lms-port').value = cfg.adapter.lms.server_port || 3483;
         document.getElementById('cfg-lms-http-port').value = cfg.adapter.lms.http_port || 9000;
         document.getElementById('cfg-lms-name').value = cfg.adapter.lms.player_name || '';
-        document.getElementById('cfg-lms-use-gateway').checked = !!cfg.adapter.lms.use_gateway;
-        document.getElementById('cfg-lms-gw-url').value = cfg.adapter.lms.gateway_url || '';
-        document.getElementById('cfg-lms-gw-quality').value = cfg.adapter.lms.gateway_quality || 'original';
-        if (cfg.adapter.lms.gateway_username) {
-          document.getElementById('lms-gw-username').value = cfg.adapter.lms.gateway_username;
+
+        // Lyrion Anywhere (Gateway) / lag
+        const lag = cfg.adapter.lag || {};
+        document.getElementById('cfg-lag-enabled').checked = !!lag.enabled;
+        document.getElementById('cfg-lag-name').value = lag.player_name || '';
+        document.getElementById('cfg-lag-url').value = lag.gateway_url || '';
+        document.getElementById('cfg-lag-quality').value = lag.gateway_quality || 'original';
+        if (lag.gateway_username) {
+          document.getElementById('lag-username').value = lag.gateway_username;
         }
-        onToggleLmsGatewayMode();
       }
     }
 
-    function onToggleLmsGatewayMode() {
-      const useGw = document.getElementById('cfg-lms-use-gateway').checked;
-      document.getElementById('lms-direct-section').style.display = useGw ? 'none' : 'block';
-      document.getElementById('lms-gateway-section').style.display = useGw ? 'block' : 'none';
-    }
-
-    async function lmsGatewayLogin() {
-      const gwUrl = document.getElementById('cfg-lms-gw-url').value.trim();
-      const username = document.getElementById('lms-gw-username').value.trim();
-      const password = document.getElementById('lms-gw-password').value;
-      const totp = document.getElementById('lms-gw-totp').value.trim();
-      const playerName = document.getElementById('cfg-lms-name').value.trim();
+    async function lagGatewayLogin() {
+      const gwUrl = document.getElementById('cfg-lag-url').value.trim();
+      const username = document.getElementById('lag-username').value.trim();
+      const password = document.getElementById('lag-password').value;
+      const totp = document.getElementById('lag-totp').value.trim();
+      const playerName = document.getElementById('cfg-lag-name').value.trim();
 
       if (!gwUrl || !username || !password) {
         showToast('Please enter Gateway URL, Username, and Password');
@@ -1384,7 +1382,7 @@
 
       try {
         showToast('Signing in to Lyrion Anywhere Gateway...');
-        const res = await fetch('/api/lms/gateway-auth', {
+        const res = await fetch('/api/lag/gateway-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1400,8 +1398,8 @@
         if (!res.ok || data.error) {
           showToast('Gateway Sign-In failed: ' + (data.error || res.statusText));
         } else {
-          document.getElementById('lms-gw-password').value = '';
-          document.getElementById('lms-gw-totp').value = '';
+          document.getElementById('lag-password').value = '';
+          document.getElementById('lag-totp').value = '';
           showToast(data.message || 'Signed in to Gateway!');
           await loadState(true);
         }
@@ -1410,10 +1408,10 @@
       }
     }
 
-    async function lmsGatewayPair() {
-      const gwUrl = document.getElementById('cfg-lms-gw-url').value.trim();
-      const pairCode = document.getElementById('lms-gw-pair-code').value.trim();
-      const playerName = document.getElementById('cfg-lms-name').value.trim();
+    async function lagGatewayPair() {
+      const gwUrl = document.getElementById('cfg-lag-url').value.trim();
+      const pairCode = document.getElementById('lag-pair-code').value.trim();
+      const playerName = document.getElementById('cfg-lag-name').value.trim();
 
       if (!pairCode) {
         showToast('Please enter a Pairing Code or lyrion-anywhere://pair?... link');
@@ -1422,7 +1420,7 @@
 
       try {
         showToast('Pairing device with Lyrion Anywhere Gateway...');
-        const res = await fetch('/api/lms/gateway-auth', {
+        const res = await fetch('/api/lag/gateway-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1436,9 +1434,9 @@
         if (!res.ok || data.error) {
           showToast('Gateway Pairing failed: ' + (data.error || res.statusText));
         } else {
-          document.getElementById('lms-gw-pair-code').value = '';
+          document.getElementById('lag-pair-code').value = '';
           if (data.gateway_url) {
-            document.getElementById('cfg-lms-gw-url').value = data.gateway_url;
+            document.getElementById('cfg-lag-url').value = data.gateway_url;
           }
           showToast(data.message || 'Paired with Gateway!');
           await loadState(true);
@@ -1448,9 +1446,9 @@
       }
     }
 
-    async function lmsGatewayLogout() {
+    async function lagGatewayLogout() {
       try {
-        const res = await fetch('/api/lms/gateway-auth', {
+        const res = await fetch('/api/lag/gateway-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'logout' })
@@ -1462,6 +1460,11 @@
         showToast('Network error: ' + e.message);
       }
     }
+
+    // Aliases for backwards compatibility
+    const lmsGatewayLogin = lagGatewayLogin;
+    const lmsGatewayPair = lagGatewayPair;
+    const lmsGatewayLogout = lagGatewayLogout;
 
     function onSelectAlsaDevice(val) {
       if (val) {
@@ -1498,15 +1501,20 @@
       cfg.adapter.jellyfin.server_url = document.getElementById('cfg-jf-url').value.trim();
       cfg.adapter.jellyfin.device_name = document.getElementById('cfg-jf-name').value.trim();
 
+      // LMS (LAN)
       cfg.adapter.lms.enabled = document.getElementById('cfg-lms-enabled').checked;
       cfg.adapter.lms.server_host = document.getElementById('cfg-lms-host').value.trim();
       cfg.adapter.lms.server_port = parseInt(document.getElementById('cfg-lms-port').value, 10) || 3483;
       cfg.adapter.lms.http_port = parseInt(document.getElementById('cfg-lms-http-port').value, 10) || 9000;
       cfg.adapter.lms.player_name = document.getElementById('cfg-lms-name').value.trim();
-      cfg.adapter.lms.use_gateway = document.getElementById('cfg-lms-use-gateway').checked;
-      const gwUrlVal = document.getElementById('cfg-lms-gw-url').value.trim();
-      cfg.adapter.lms.gateway_url = gwUrlVal ? gwUrlVal : null;
-      cfg.adapter.lms.gateway_quality = document.getElementById('cfg-lms-gw-quality').value || 'original';
+
+      // Lyrion Anywhere (Gateway) / lag
+      if (!cfg.adapter.lag) cfg.adapter.lag = {};
+      cfg.adapter.lag.enabled = document.getElementById('cfg-lag-enabled').checked;
+      cfg.adapter.lag.player_name = document.getElementById('cfg-lag-name').value.trim();
+      const lagGwUrlVal = document.getElementById('cfg-lag-url').value.trim();
+      cfg.adapter.lag.gateway_url = lagGwUrlVal ? lagGwUrlVal : null;
+      cfg.adapter.lag.gateway_quality = document.getElementById('cfg-lag-quality').value || 'original';
 
       try {
         const res = await fetch('/api/config', {

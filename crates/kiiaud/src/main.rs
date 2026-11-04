@@ -8,7 +8,7 @@
 use clap::Parser;
 use kiiaud_adapter_cli::run_ipc_server;
 use kiiaud_adapter_jellyfin::run_jellyfin_adapter;
-use kiiaud_adapter_lms::run_lms_adapter;
+use kiiaud_adapter_lms::{run_lag_adapter, run_lms_adapter};
 use kiiaud_adapter_mpd::run_mpd_server_with_dir;
 use kiiaud_adapter_web::run_web_server;
 use kiiaud_core::{AudioSource, DsdMode, KiiaudConfig, PlaybackCommand, parse_mac_address};
@@ -278,24 +278,57 @@ struct Args {
     #[arg(long, value_parser = parse_mac_address, help_heading = "LMS Adapter Options")]
     lms_mac: Option<[u8; 6]>,
 
-    /// Connect to LMS via a Lyrion Anywhere Gateway (`https://...` or `http://...`).
-    #[arg(long, help_heading = "LMS Adapter Options")]
-    lms_gateway: Option<String>,
+    // -------------------------------------------------------------------------
+    // Lyrion Anywhere (Gateway) / lag Adapter Options (Overrides [adapter.lag])
+    // -------------------------------------------------------------------------
+    /// Enable or disable Lyrion Anywhere (Gateway) adapter (`true` or `false`).
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        help_heading = "Lyrion Anywhere (Gateway) Options"
+    )]
+    lag: Option<bool>,
+
+    /// Connect to remote Lyrion Anywhere Gateway URL (`https://...` or `http://...`).
+    #[arg(long, help_heading = "Lyrion Anywhere (Gateway) Options")]
+    lag_url: Option<String>,
 
     /// Lyrion Anywhere Gateway username.
-    #[arg(long, help_heading = "LMS Adapter Options")]
-    lms_user: Option<String>,
+    #[arg(long, help_heading = "Lyrion Anywhere (Gateway) Options")]
+    lag_user: Option<String>,
 
     /// Lyrion Anywhere Gateway password.
-    #[arg(long, help_heading = "LMS Adapter Options")]
-    lms_password: Option<String>,
+    #[arg(long, help_heading = "Lyrion Anywhere (Gateway) Options")]
+    lag_password: Option<String>,
 
     /// Lyrion Anywhere Gateway one-time pairing code or `lyrion-anywhere://pair?...` link.
-    #[arg(long, help_heading = "LMS Adapter Options")]
-    lms_pair_code: Option<String>,
+    #[arg(long, help_heading = "Lyrion Anywhere (Gateway) Options")]
+    lag_pair_code: Option<String>,
 
     /// Lyrion Anywhere Gateway streaming quality (`original`, `high`, or `low`).
-    #[arg(long, help_heading = "LMS Adapter Options")]
+    #[arg(long, help_heading = "Lyrion Anywhere (Gateway) Options")]
+    lag_quality: Option<String>,
+
+    /// Override Lyrion Anywhere player display name.
+    #[arg(long, help_heading = "Lyrion Anywhere (Gateway) Options")]
+    lag_player_name: Option<String>,
+
+    // Backward-compatible legacy aliases:
+    #[arg(long, hide = true)]
+    lms_gateway: Option<String>,
+
+    #[arg(long, hide = true)]
+    lms_user: Option<String>,
+
+    #[arg(long, hide = true)]
+    lms_password: Option<String>,
+
+    #[arg(long, hide = true)]
+    lms_pair_code: Option<String>,
+
+    #[arg(long, hide = true)]
     lms_quality: Option<String>,
 }
 
@@ -404,24 +437,30 @@ impl Args {
         if let Some(mac) = self.lms_mac {
             config.adapter.lms.mac_address = mac;
         }
-        if let Some(ref gw) = self.lms_gateway {
-            config.adapter.lms.enabled = true;
-            config.adapter.lms.use_gateway = true;
-            config.adapter.lms.gateway_url = Some(gw.clone());
+
+        // [adapter.lag] overrides
+        if let Some(lag_en) = self.lag {
+            config.adapter.lag.enabled = lag_en;
         }
-        if let Some(ref u) = self.lms_user {
-            config.adapter.lms.gateway_username = Some(u.clone());
+        if let Some(url) = self.lag_url.as_ref().or(self.lms_gateway.as_ref()) {
+            config.adapter.lag.enabled = true;
+            config.adapter.lag.gateway_url = Some(url.to_string());
         }
-        if let Some(ref p) = self.lms_password {
-            config.adapter.lms.gateway_password = Some(p.clone());
+        if let Some(u) = self.lag_user.as_ref().or(self.lms_user.as_ref()) {
+            config.adapter.lag.gateway_username = Some(u.to_string());
         }
-        if let Some(ref code) = self.lms_pair_code {
-            config.adapter.lms.enabled = true;
-            config.adapter.lms.use_gateway = true;
-            config.adapter.lms.gateway_pairing_code = Some(code.clone());
+        if let Some(p) = self.lag_password.as_ref().or(self.lms_password.as_ref()) {
+            config.adapter.lag.gateway_password = Some(p.to_string());
         }
-        if let Some(ref q) = self.lms_quality {
-            config.adapter.lms.gateway_quality = q.clone();
+        if let Some(code) = self.lag_pair_code.as_ref().or(self.lms_pair_code.as_ref()) {
+            config.adapter.lag.enabled = true;
+            config.adapter.lag.gateway_pairing_code = Some(code.to_string());
+        }
+        if let Some(q) = self.lag_quality.as_ref().or(self.lms_quality.as_ref()) {
+            config.adapter.lag.gateway_quality = q.to_string();
+        }
+        if let Some(ref n) = self.lag_player_name {
+            config.adapter.lag.player_name = n.clone();
         }
     }
 }
@@ -691,13 +730,24 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn LMS / Lyrion SlimProto adapter supervisor (always spawned so it can be enabled/hot-reloaded from WebUI at runtime)
+    // Spawn LMS SlimProto (LAN) adapter supervisor
     {
         let lms_cfg = config.adapter.lms.clone();
         let h = handle.clone();
         tokio::spawn(async move {
             if let Err(e) = run_lms_adapter(lms_cfg, h).await {
-                tracing::error!("LMS adapter error: {e}");
+                tracing::error!("LMS LAN adapter error: {e}");
+            }
+        });
+    }
+
+    // Spawn Lyrion Anywhere (Gateway) / lag adapter supervisor
+    {
+        let lag_cfg = config.adapter.lag.clone();
+        let h = handle.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_lag_adapter(lag_cfg, h).await {
+                tracing::error!("Lyrion Anywhere (Gateway) adapter error: {e}");
             }
         });
     }

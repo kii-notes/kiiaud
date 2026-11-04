@@ -103,32 +103,25 @@ device_id = "kiiaud-endpoint-01"
 device_name = "kiiaud Hi-Fi Endpoint"
 
 [adapter.lms]
-# Logitech Media Server (LMS / Lyrion) SlimProto client adapter.
-# Emulates a hardware Squeezebox player, supporting gapless bit-perfect streaming.
+# Logitech Media Server (LMS / Lyrion) SlimProto client adapter (LAN direct).
+# Emulates a hardware Squeezebox player, connecting directly to local LMS server over TCP port 3483.
 enabled = false
 server_host = "192.168.1.100"
 server_port = 3483
 http_port = 9000
 player_name = "kiiaud Squeezebox"
+mac_address = [2, 75, 73, 73, 65, 85]
 
-# Remote access via Lyrion Anywhere Gateway (HTTPS / WSS tunnel):
-# Set `use_gateway = true` and `gateway_url` to connect remotely through a Lyrion Anywhere Gateway
-# instead of direct LAN TCP 3483.
-use_gateway = false
-gateway_url = ""
+[adapter.lag]
+# Lyrion Anywhere (Gateway) adapter.
+# Connects securely to a remote Lyrion Anywhere Gateway over HTTPS / WebSocket tunnel.
+enabled = false
+gateway_url = "https://music.example.com"
 gateway_quality = "original" # "original" (bit-perfect passthrough), "high" (Opus 160k), or "low" (Opus 96k)
+player_name = "kiiaud Squeezebox"
 # gateway_username = ""
 # gateway_refresh_token = ""
 # gateway_device_name = ""
-
-# MAC address for LMS device tracking and persistence (6 bytes).
-# LMS tracks each player by this unique MAC address (playlists, volume, settings).
-# Supports multiple formats:
-#   1. Standard MAC string: "38:D5:47:15:E8:86" or "38-D5-47-15-E8-86"
-#   2. Hex byte array:      [0x38, 0xD5, 0x47, 0x15, 0xE8, 0x86]
-#   3. Decimal byte array:  [56, 213, 71, 21, 232, 134]
-# Default is locally-administered virtual MAC [0x02, 0x4B, 0x49, 0x49, 0x41, 0x55] ("KIIAU"):
-mac_address = [2, 75, 73, 73, 65, 85]
 "#;
 
 /// Information about where configuration was loaded from.
@@ -395,9 +388,10 @@ impl KiiaudConfig {
                 ConfigSource::SystemOnly(sys_path)
             };
 
-            let cfg: KiiaudConfig = base_val.try_into().map_err(|e| {
+            let mut cfg: KiiaudConfig = base_val.try_into().map_err(|e| {
                 KiiaudError::Config(format!("Failed to deserialize merged config: {e}"))
             })?;
+            cfg.migrate_legacy_settings();
             return Ok((cfg, source));
         }
 
@@ -461,7 +455,30 @@ impl KiiaudConfig {
     }
 
     pub fn from_toml_str(s: &str) -> Result<Self> {
-        toml::from_str(s).map_err(|e| KiiaudError::Config(format!("TOML parse error: {e}")))
+        let mut cfg: Self = toml::from_str(s).map_err(|e| KiiaudError::Config(format!("TOML parse error: {e}")))?;
+        cfg.migrate_legacy_settings();
+        Ok(cfg)
+    }
+
+    /// Automatically migrate legacy `[adapter.lms]` gateway settings to dedicated `[adapter.lag]`.
+    pub fn migrate_legacy_settings(&mut self) {
+        if self.adapter.lms.use_gateway.unwrap_or(false) && self.adapter.lag.gateway_url.is_none() {
+            tracing::info!("Migrating legacy [adapter.lms] use_gateway settings to [adapter.lag]");
+            self.adapter.lag.enabled = self.adapter.lms.enabled;
+            self.adapter.lag.gateway_url = self.adapter.lms.gateway_url.take();
+            self.adapter.lag.gateway_username = self.adapter.lms.gateway_username.take();
+            self.adapter.lag.gateway_password = self.adapter.lms.gateway_password.take();
+            self.adapter.lag.gateway_pairing_code = self.adapter.lms.gateway_pairing_code.take();
+            self.adapter.lag.gateway_refresh_token = self.adapter.lms.gateway_refresh_token.take();
+            self.adapter.lag.gateway_device_name = self.adapter.lms.gateway_device_name.take();
+            if let Some(q) = self.adapter.lms.gateway_quality.take() {
+                self.adapter.lag.gateway_quality = q;
+            }
+            self.adapter.lag.player_name = self.adapter.lms.player_name.clone();
+            self.adapter.lag.max_sample_rate = self.adapter.lms.max_sample_rate;
+            self.adapter.lag.dsd_support = self.adapter.lms.dsd_support;
+            self.adapter.lms.enabled = false;
+        }
     }
 
     pub fn to_toml_string(&self) -> Result<String> {
@@ -550,6 +567,7 @@ pub struct AdaptersConfig {
     pub mpd: MpdAdapterConfig,
     pub jellyfin: JellyfinAdapterConfig,
     pub lms: LmsAdapterConfig,
+    pub lag: LagAdapterConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -629,8 +647,33 @@ pub struct LmsAdapterConfig {
     /// If None, auto-detected from output capabilities (true if DAC supports DSD, false otherwise).
     /// When false, LMS automatically transcodes DSD to PCM at <= max_sample_rate.
     pub dsd_support: Option<bool>,
-    /// Whether to connect remotely via a Lyrion Anywhere Gateway (`AnywhereWs`) instead of LAN `DirectTcp`.
-    pub use_gateway: bool,
+
+    // Legacy fields for backward compatibility with older kiiaud configs (migrated automatically to `[adapter.lag]`)
+    #[serde(default)]
+    pub use_gateway: Option<bool>,
+    #[serde(default)]
+    pub gateway_url: Option<String>,
+    #[serde(default)]
+    pub gateway_username: Option<String>,
+    #[serde(default)]
+    pub gateway_password: Option<String>,
+    #[serde(default)]
+    pub gateway_pairing_code: Option<String>,
+    #[serde(default)]
+    pub gateway_refresh_token: Option<String>,
+    #[serde(default)]
+    pub gateway_device_name: Option<String>,
+    #[serde(default)]
+    pub gateway_quality: Option<String>,
+}
+
+/// Lyrion Anywhere (Gateway) adapter configuration (`[adapter.lag]`).
+///
+/// Connects securely to a remote Lyrion Anywhere Gateway over HTTPS / WebSocket tunnel (`WS /v1/player`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LagAdapterConfig {
+    pub enabled: bool,
     /// Base URL of the Lyrion Anywhere Gateway (e.g. `"https://music.example.com"` or `"http://10.8.0.1:9443"`).
     pub gateway_url: Option<String>,
     /// Optional username for Lyrion Anywhere Gateway login.
@@ -645,6 +688,30 @@ pub struct LmsAdapterConfig {
     pub gateway_device_name: Option<String>,
     /// Streaming quality requested from the Lyrion Anywhere Gateway: `"original"` (default, bit-perfect passthrough), `"high"` (Opus 160k), or `"low"` (Opus 96k).
     pub gateway_quality: String,
+    /// Player display name for Lyrion Anywhere Gateway. Defaults to "kiiaud Squeezebox".
+    pub player_name: String,
+    /// Maximum sample rate in Hz to report to LMS HELO over gateway.
+    pub max_sample_rate: Option<u32>,
+    /// Whether to advertise DSD (`dsf,dff`) format support.
+    pub dsd_support: Option<bool>,
+}
+
+impl Default for LagAdapterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gateway_url: None,
+            gateway_username: None,
+            gateway_password: None,
+            gateway_pairing_code: None,
+            gateway_refresh_token: None,
+            gateway_device_name: None,
+            gateway_quality: "original".to_owned(),
+            player_name: "kiiaud Squeezebox".to_owned(),
+            max_sample_rate: None,
+            dsd_support: None,
+        }
+    }
 }
 
 /// Parses a MAC address from various string representations.
@@ -750,14 +817,14 @@ impl Default for LmsAdapterConfig {
             mac_address: [0x02, 0x4b, 0x49, 0x49, 0x41, 0x55], // locally administered "KIIAU"
             max_sample_rate: None,
             dsd_support: None,
-            use_gateway: false,
+            use_gateway: None,
             gateway_url: None,
             gateway_username: None,
             gateway_password: None,
             gateway_pairing_code: None,
             gateway_refresh_token: None,
             gateway_device_name: None,
-            gateway_quality: "original".to_owned(),
+            gateway_quality: None,
         }
     }
 }

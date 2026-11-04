@@ -208,6 +208,52 @@ mac_address = [56, 213, 71, 21, 232, 134]
 }
 
 #[test]
+fn test_lag_adapter_config_and_legacy_migration() {
+    // 1. Direct [adapter.lag] config parsing
+    let toml_lag = r#"
+[adapter.lms]
+enabled = false
+server_host = "192.168.1.50"
+
+[adapter.lag]
+enabled = true
+gateway_url = "https://music.home.arpa"
+gateway_quality = "high"
+player_name = "Living Room Pi"
+"#;
+    let cfg = KiiaudConfig::from_toml_str(toml_lag).unwrap();
+    assert!(!cfg.adapter.lms.enabled);
+    assert_eq!(cfg.adapter.lms.server_host, "192.168.1.50");
+    assert!(cfg.adapter.lag.enabled);
+    assert_eq!(cfg.adapter.lag.gateway_url.as_deref(), Some("https://music.home.arpa"));
+    assert_eq!(cfg.adapter.lag.gateway_quality, "high");
+    assert_eq!(cfg.adapter.lag.player_name, "Living Room Pi");
+
+    // 2. Backward-compatible migration from legacy [adapter.lms] use_gateway = true
+    let toml_legacy = r#"
+[adapter.lms]
+enabled = true
+server_host = "192.168.1.100"
+player_name = "Legacy Player"
+use_gateway = true
+gateway_url = "https://remote.example.com"
+gateway_username = "alice"
+gateway_refresh_token = "tok_xyz"
+gateway_quality = "low"
+"#;
+    let migrated = KiiaudConfig::from_toml_str(toml_legacy).unwrap();
+    // LMS direct should be disabled since it was previously acting as gateway
+    assert!(!migrated.adapter.lms.enabled);
+    // LAG should inherit enabled, url, user, token, quality, and name
+    assert!(migrated.adapter.lag.enabled);
+    assert_eq!(migrated.adapter.lag.gateway_url.as_deref(), Some("https://remote.example.com"));
+    assert_eq!(migrated.adapter.lag.gateway_username.as_deref(), Some("alice"));
+    assert_eq!(migrated.adapter.lag.gateway_refresh_token.as_deref(), Some("tok_xyz"));
+    assert_eq!(migrated.adapter.lag.gateway_quality, "low");
+    assert_eq!(migrated.adapter.lag.player_name, "Legacy Player");
+}
+
+#[test]
 fn test_default_config_template_is_valid() {
     let cfg = KiiaudConfig::from_toml_str(kiiaud_core::config::DEFAULT_CONFIG_TEMPLATE)
         .expect("DEFAULT_CONFIG_TEMPLATE must be valid TOML");

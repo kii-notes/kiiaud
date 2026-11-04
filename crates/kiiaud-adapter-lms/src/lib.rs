@@ -18,7 +18,7 @@
 //!    - Parses Gateway `{"stream":{...}}` metadata messages to expose the remote served codec and relay mode in the Signal Path.
 
 use futures_util::{SinkExt, StreamExt};
-use kiiaud_core::config::{LmsAdapterConfig, parse_mac_address};
+use kiiaud_core::config::{LagAdapterConfig, LmsAdapterConfig, parse_mac_address};
 use kiiaud_core::{AudioSource, PlaybackCommand, PlaybackEvent, PlayerState, Result};
 use kiiaud_decoder::stream::{
     ANYWHERE_FORMAT_HINT_HEADER, ANYWHERE_STREAM_META_HEADER, set_anywhere_ack_callback,
@@ -49,28 +49,44 @@ pub const ANYWHERE_PLAYER_PROTOCOL: u32 = 2;
 /// Global watch channel sender for hot-reloading `LmsAdapterConfig` at runtime (e.g. from WebUI).
 static LMS_CONFIG_WATCH: OnceLock<watch::Sender<LmsAdapterConfig>> = OnceLock::new();
 
-/// Global runtime status of the LMS / Lyrion Anywhere connection for inspection in the WebUI.
+/// Global runtime status of the LMS LAN connection for inspection in the WebUI.
 static LMS_RUNTIME_STATUS: OnceLock<RwLock<LmsRuntimeStatus>> = OnceLock::new();
+
+/// Global watch channel sender for hot-reloading `LagAdapterConfig` at runtime (e.g. from WebUI).
+static LAG_CONFIG_WATCH: OnceLock<watch::Sender<LagAdapterConfig>> = OnceLock::new();
+
+/// Global runtime status of the Lyrion Anywhere Gateway (lag) connection for inspection in the WebUI.
+static LAG_RUNTIME_STATUS: OnceLock<RwLock<LagRuntimeStatus>> = OnceLock::new();
 
 /// Global channel forwarding byte-acknowledgements `(session_id, stream_seq, total_bytes)` from
 /// `kiiaud-decoder::stream` back to the active Lyrion Anywhere WebSocket session.
 static ANYWHERE_ACK_TX: OnceLock<RwLock<Option<mpsc::UnboundedSender<(String, u64, u64)>>>> =
     OnceLock::new();
 
-/// Snapshot of the LMS / Lyrion Anywhere adapter connection state.
+/// Snapshot of the LMS (LAN) adapter connection state.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LmsRuntimeStatus {
     pub connected: bool,
-    pub mode: String, // "DirectTcp", "AnywhereWs", or "Disabled"
+    pub endpoint: String,
+    pub assigned_mac: Option<String>,
+    pub assigned_name: Option<String>,
+    pub last_error: Option<String>,
+}
+
+/// Snapshot of the Lyrion Anywhere Gateway (lag) adapter connection state.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LagRuntimeStatus {
+    pub connected: bool,
     pub endpoint: String,
     pub assigned_mac: Option<String>,
     pub assigned_name: Option<String>,
     pub gateway_authenticated: bool,
+    pub quality: String,
     pub last_stream_info: Option<String>,
     pub last_error: Option<String>,
 }
 
-/// Get the current runtime status of the LMS / Lyrion Anywhere adapter.
+/// Get the current runtime status of the LMS LAN adapter.
 pub fn get_lms_runtime_status() -> LmsRuntimeStatus {
     LMS_RUNTIME_STATUS
         .get_or_init(|| RwLock::new(LmsRuntimeStatus::default()))
@@ -78,16 +94,36 @@ pub fn get_lms_runtime_status() -> LmsRuntimeStatus {
         .clone()
 }
 
-fn update_runtime_status<F: FnOnce(&mut LmsRuntimeStatus)>(f: F) {
+fn update_lms_runtime_status<F: FnOnce(&mut LmsRuntimeStatus)>(f: F) {
     let lock = LMS_RUNTIME_STATUS.get_or_init(|| RwLock::new(LmsRuntimeStatus::default()));
     let mut st = lock.write();
     f(&mut st);
 }
 
-/// Trigger a live hot-reload of the LMS adapter with a new `LmsAdapterConfig`.
-/// Immediately interrupts any active `DirectTcp` or `AnywhereWs` session and reconnects using the new settings.
+/// Get the current runtime status of the Lyrion Anywhere Gateway (lag) adapter.
+pub fn get_lag_runtime_status() -> LagRuntimeStatus {
+    LAG_RUNTIME_STATUS
+        .get_or_init(|| RwLock::new(LagRuntimeStatus::default()))
+        .read()
+        .clone()
+}
+
+fn update_lag_runtime_status<F: FnOnce(&mut LagRuntimeStatus)>(f: F) {
+    let lock = LAG_RUNTIME_STATUS.get_or_init(|| RwLock::new(LagRuntimeStatus::default()));
+    let mut st = lock.write();
+    f(&mut st);
+}
+
+/// Trigger a live hot-reload of the LMS LAN adapter with a new `LmsAdapterConfig`.
 pub fn reload_lms_adapter(new_config: LmsAdapterConfig) {
     if let Some(tx) = LMS_CONFIG_WATCH.get() {
+        let _ = tx.send(new_config);
+    }
+}
+
+/// Trigger a live hot-reload of the Lyrion Anywhere Gateway (lag) adapter with a new `LagAdapterConfig`.
+pub fn reload_lag_adapter(new_config: LagAdapterConfig) {
+    if let Some(tx) = LAG_CONFIG_WATCH.get() {
         let _ = tx.send(new_config);
     }
 }
@@ -384,8 +420,57 @@ pub async fn gateway_refresh_token(
     Ok((access, new_refresh))
 }
 
-/// Start the LMS / Lyrion Anywhere supervisor loop with hot-reload and automatic reconnect (`NFR-007`).
+/// Start the LMS (LAN SlimProto) adapter supervisor loop with hot-reload and automatic reconnect (`NFR-007`).
 pub async fn run_lms_adapter(initial_config: LmsAdapterConfig, engine: EngineHandle) -> Result<()> {
+    let (tx, mut rx) = watch::channel(initial_config);
+    let _ = LMS_CONFIG_WATCH.set(tx);
+
+    loop {
+        let config = rx.borrow_and_update().clone();
+
+        if !config.enabled {
+            update_lms_runtime_status(|st| {
+                st.connected = false;
+                st.endpoint.clear();
+            });
+            tracing::debug!("LMS LAN adapter is disabled; waiting for configuration change");
+            if rx.changed().await.is_err() {
+                return Ok(());
+            }
+            continue;
+        }
+
+        tokio::select! {
+            _ = rx.changed() => {
+                tracing::info!("LMS LAN adapter configuration updated at runtime; hot-reloading session");
+                continue;
+            }
+            session_res = connect_and_run_direct_session(&config, &engine) => {
+                match session_res {
+                    Ok(()) => {
+                        tracing::info!("LMS LAN session closed cleanly; reconnecting in 5s");
+                    }
+                    Err(e) => {
+                        update_lms_runtime_status(|st| {
+                            st.connected = false;
+                            st.last_error = Some(e.clone());
+                        });
+                        tracing::warn!("LMS LAN session error: {e}; retrying in 5s");
+                    }
+                }
+                tokio::select! {
+                    _ = rx.changed() => {
+                        tracing::info!("LMS LAN adapter configuration changed during backoff; reconnecting immediately");
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+            }
+        }
+    }
+}
+
+/// Start the Lyrion Anywhere Gateway (lag) adapter supervisor loop with hot-reload and automatic reconnect (`NFR-007`).
+pub async fn run_lag_adapter(initial_config: LagAdapterConfig, engine: EngineHandle) -> Result<()> {
     // Register the global byte-ack callback from `kiiaud-decoder` once
     set_anywhere_ack_callback(|session, stream_seq, total_bytes| {
         if let Some(lock) = ANYWHERE_ACK_TX.get()
@@ -396,57 +481,44 @@ pub async fn run_lms_adapter(initial_config: LmsAdapterConfig, engine: EngineHan
     });
 
     let (tx, mut rx) = watch::channel(initial_config);
-    let _ = LMS_CONFIG_WATCH.set(tx);
+    let _ = LAG_CONFIG_WATCH.set(tx);
 
     loop {
         let config = rx.borrow_and_update().clone();
 
         if !config.enabled {
-            update_runtime_status(|st| {
+            update_lag_runtime_status(|st| {
                 st.connected = false;
-                st.mode = "Disabled".to_owned();
                 st.endpoint.clear();
             });
-            tracing::debug!("LMS adapter is disabled; waiting for configuration change");
+            tracing::debug!("Lyrion Anywhere (Gateway) adapter is disabled; waiting for configuration change");
             if rx.changed().await.is_err() {
                 return Ok(());
             }
             continue;
         }
 
-        let is_gateway = config.use_gateway
-            || config
-                .gateway_url
-                .as_deref()
-                .is_some_and(|u| !u.trim().is_empty() && config.use_gateway);
-
         tokio::select! {
             _ = rx.changed() => {
-                tracing::info!("LMS adapter configuration updated at runtime; hot-reloading session");
+                tracing::info!("Lyrion Anywhere (Gateway) adapter configuration updated at runtime; hot-reloading session");
                 continue;
             }
-            session_res = async {
-                if is_gateway {
-                    connect_and_run_anywhere_session(&config, &engine).await
-                } else {
-                    connect_and_run_direct_session(&config, &engine).await
-                }
-            } => {
+            session_res = connect_and_run_anywhere_session(&config, &engine) => {
                 match session_res {
                     Ok(()) => {
-                        tracing::info!("LMS session closed cleanly; reconnecting in 5s");
+                        tracing::info!("Lyrion Anywhere (Gateway) session closed cleanly; reconnecting in 5s");
                     }
                     Err(e) => {
-                        update_runtime_status(|st| {
+                        update_lag_runtime_status(|st| {
                             st.connected = false;
                             st.last_error = Some(e.clone());
                         });
-                        tracing::warn!("LMS session error: {e}; retrying in 5s");
+                        tracing::warn!("Lyrion Anywhere (Gateway) session error: {e}; retrying in 5s");
                     }
                 }
                 tokio::select! {
                     _ = rx.changed() => {
-                        tracing::info!("LMS adapter configuration changed during backoff; reconnecting immediately");
+                        tracing::info!("Lyrion Anywhere (Gateway) adapter configuration changed during backoff; reconnecting immediately");
                     }
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                 }
@@ -461,13 +533,11 @@ async fn connect_and_run_direct_session(
     engine: &EngineHandle,
 ) -> std::result::Result<(), String> {
     let addr = format!("{}:{}", config.server_host, config.server_port);
-    update_runtime_status(|st| {
+    update_lms_runtime_status(|st| {
         st.connected = false;
-        st.mode = "DirectTcp".to_owned();
         st.endpoint = addr.clone();
         st.assigned_mac = Some(format_mac(&config.mac_address));
         st.assigned_name = Some(config.player_name.clone());
-        st.last_stream_info = None;
     });
 
     let mut stream = TcpStream::connect(&addr)
@@ -475,7 +545,8 @@ async fn connect_and_run_direct_session(
         .map_err(|e| format!("connect to {addr} failed: {e}"))?;
     let _ = stream.set_nodelay(true);
 
-    let (max_sample_rate, dsd_supported) = resolve_hardware_capabilities(config, engine);
+    let (max_sample_rate, dsd_supported) =
+        resolve_hardware_capabilities(config.max_sample_rate, config.dsd_support, engine);
     let start_epoch = Instant::now();
 
     // 1. Send HELO packet with hardware-informed capabilities
@@ -497,7 +568,7 @@ async fn connect_and_run_direct_session(
         .await
         .map_err(|e| format!("SETD write failed: {e}"))?;
 
-    update_runtime_status(|st| {
+    update_lms_runtime_status(|st| {
         st.connected = true;
         st.last_error = None;
     });
@@ -530,7 +601,7 @@ async fn connect_and_run_direct_session(
 
                 let replies = handle_slimproto_server_packet(
                     &payload,
-                    config,
+                    Some((&config.server_host, config.http_port)),
                     &config.player_name,
                     engine,
                     start_epoch,
@@ -569,7 +640,7 @@ struct AnywhereSessionCtx {
 
 /// Run a remote Lyrion Anywhere Gateway session (`AnywhereWs` over `WS /v1/player` + `GET /v1/stream/...`).
 async fn connect_and_run_anywhere_session(
-    config: &LmsAdapterConfig,
+    config: &LagAdapterConfig,
     engine: &EngineHandle,
 ) -> std::result::Result<(), String> {
     let raw_gw = config
@@ -578,10 +649,10 @@ async fn connect_and_run_anywhere_session(
         .ok_or_else(|| "gateway_url is not configured".to_owned())?;
     let base_url = normalize_gateway_url(raw_gw)?;
 
-    update_runtime_status(|st| {
+    update_lag_runtime_status(|st| {
         st.connected = false;
-        st.mode = "AnywhereWs".to_owned();
         st.endpoint = base_url.clone();
+        st.quality = config.gateway_quality.clone();
     });
 
     // 1. Obtain access_token + refresh_token (via stored refresh_token, pairing_code, or username/password)
@@ -589,7 +660,7 @@ async fn connect_and_run_anywhere_session(
     let access_token = Arc::new(RwLock::new(initial_access.clone()));
     let refresh_token_holder = Arc::new(RwLock::new(initial_refresh.clone()));
 
-    update_runtime_status(|st| {
+    update_lag_runtime_status(|st| {
         st.gateway_authenticated = true;
     });
 
@@ -670,7 +741,8 @@ async fn connect_and_run_anywhere_session(
     // 5. Send HELO with the Gateway-assigned MAC and Device ID 12 (software player).
     //    Per Lyrion Anywhere protocol §5.1, do NOT send unsolicited SETD at startup;
     //    only send SETD in response to a server `setd` id=0 query.
-    let (max_sample_rate, dsd_supported) = resolve_hardware_capabilities(config, engine);
+    let (max_sample_rate, dsd_supported) =
+        resolve_hardware_capabilities(config.max_sample_rate, config.dsd_support, engine);
     let start_epoch = Instant::now();
     let helo_pkt = build_helo_packet(
         &assigned_mac,
@@ -683,7 +755,7 @@ async fn connect_and_run_anywhere_session(
         .await
         .map_err(|e| format!("failed to send HELO over gateway WS: {e}"))?;
 
-    update_runtime_status(|st| {
+    update_lag_runtime_status(|st| {
         st.connected = true;
         st.assigned_mac = Some(format_mac(&assigned_mac));
         st.assigned_name = Some(assigned_name.clone());
@@ -742,7 +814,7 @@ async fn connect_and_run_anywhere_session(
 
                             let replies = handle_slimproto_server_packet(
                                 payload,
-                                config,
+                                None,
                                 &assigned_name,
                                 engine,
                                 start_epoch,
@@ -849,14 +921,14 @@ fn handle_gateway_text_message(txt: &str) {
         };
         let summary = format!("Stream #{seq}: {served_desc} ({sent_desc})");
         tracing::info!(%summary, "Lyrion Anywhere Gateway stream metadata received");
-        update_runtime_status(|st| {
+        update_lag_runtime_status(|st| {
             st.last_stream_info = Some(summary);
         });
     }
 }
 
 async fn resolve_anywhere_tokens(
-    config: &LmsAdapterConfig,
+    config: &LagAdapterConfig,
     base_url: &str,
 ) -> std::result::Result<(String, String), String> {
     // 1. Try existing refresh_token first
@@ -907,7 +979,7 @@ async fn resolve_anywhere_tokens(
 }
 
 fn persist_rotated_refresh_token(new_refresh: &str) {
-    if let Some(tx) = LMS_CONFIG_WATCH.get() {
+    if let Some(tx) = LAG_CONFIG_WATCH.get() {
         tx.send_if_modified(|cfg| {
             if cfg.gateway_refresh_token.as_deref() != Some(new_refresh) {
                 cfg.gateway_refresh_token = Some(new_refresh.to_owned());
@@ -958,20 +1030,20 @@ fn build_event_stat_packet(
 
 /// Resolve max sample rate and DSD support based on config override or detected DAC output capabilities.
 pub fn resolve_hardware_capabilities(
-    config: &LmsAdapterConfig,
+    max_sample_rate: Option<u32>,
+    dsd_support: Option<bool>,
     engine: &EngineHandle,
 ) -> (u32, bool) {
     let st = engine.status();
     let out_caps = st.output_capabilities.as_ref();
 
-    let max_rate = config.max_sample_rate.unwrap_or_else(|| {
+    let max_rate = max_sample_rate.unwrap_or_else(|| {
         out_caps
             .and_then(|c| c.sample_rates.iter().copied().max())
             .unwrap_or(192_000)
     });
 
-    let dsd = config
-        .dsd_support
+    let dsd = dsd_support
         .unwrap_or_else(|| out_caps.is_some_and(|c| c.dsd_native || c.dsd_dop));
 
     (max_rate, dsd)
@@ -1111,7 +1183,7 @@ pub fn build_stat_packet(
 /// Process a server-to-client SlimProto packet (`strm`, `setd`, `audg`, `aude`) and return any response packets to send.
 async fn handle_slimproto_server_packet(
     payload: &[u8],
-    config: &LmsAdapterConfig,
+    default_http_target: Option<(&str, u16)>,
     effective_player_name: &str,
     engine: &EngineHandle,
     start_epoch: Instant,
@@ -1169,12 +1241,12 @@ async fn handle_slimproto_server_packet(
                         AudioSource::HttpStream { url, headers }
                     } else {
                         let host = if server_ip_raw == 0 {
-                            config.server_host.clone()
+                            default_http_target.map(|(h, _)| h).unwrap_or("127.0.0.1").to_owned()
                         } else {
                             Ipv4Addr::from(server_ip_raw).to_string()
                         };
                         let port = if server_port == 0 {
-                            config.http_port
+                            default_http_target.map(|(_, p)| p).unwrap_or(9000)
                         } else {
                             server_port
                         };
@@ -1403,7 +1475,7 @@ mod tests {
 
         let replies = handle_slimproto_server_packet(
             &payload,
-            &cfg.adapter.lms,
+            None,
             "kiiaud Gateway Player",
             &handle,
             Instant::now(),

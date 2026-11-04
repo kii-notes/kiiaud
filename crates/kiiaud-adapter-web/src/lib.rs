@@ -10,7 +10,8 @@
 //! - ALSA hardware playback device scanner (`/proc/asound/cards` & `/proc/asound/pcm`) and `kiiaud.toml` configuration editor (`/api/config`).
 
 use kiiaud_adapter_lms::{
-    LmsRuntimeStatus, gateway_login, gateway_pair, get_lms_runtime_status, reload_lms_adapter,
+    LagRuntimeStatus, LmsRuntimeStatus, gateway_login, gateway_pair, get_lag_runtime_status,
+    get_lms_runtime_status, reload_lag_adapter, reload_lms_adapter,
 };
 use kiiaud_core::{
     AudioFormat, AudioSource, KiiaudConfig, KiiaudError, PathPolicy, PlaybackCommand, PlaybackItem,
@@ -51,6 +52,7 @@ pub struct WebStateSnapshot {
     pub config: KiiaudConfig,
     pub alsa_devices: Vec<AlsaDeviceInfo>,
     pub lms_runtime: LmsRuntimeStatus,
+    pub lag_runtime: LagRuntimeStatus,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -205,6 +207,7 @@ pub fn build_state_snapshot(ctx: &WebServerContext) -> WebStateSnapshot {
     };
 
     let lms_runtime = get_lms_runtime_status();
+    let lag_runtime = get_lag_runtime_status();
 
     let source_desc = match st.current_item.as_ref().map(|i| &i.source) {
         Some(AudioSource::LocalFile(p)) => {
@@ -218,10 +221,10 @@ pub fn build_state_snapshot(ctx: &WebServerContext) -> WebStateSnapshot {
         Some(AudioSource::HttpStream { url, .. }) => {
             let clean_url = kiiaud_core::strip_uri_auth(url);
             if clean_url.contains("/v1/stream/") {
-                if let Some(ref stream_info) = lms_runtime.last_stream_info {
-                    format!("Lyrion Anywhere Gateway • {stream_info} • {clean_url}")
+                if let Some(ref stream_info) = lag_runtime.last_stream_info {
+                    format!("Lyrion Anywhere (Gateway) • {stream_info} • {clean_url}")
                 } else {
-                    format!("Lyrion Anywhere Gateway Stream • {clean_url}")
+                    format!("Lyrion Anywhere (Gateway) Stream • {clean_url}")
                 }
             } else {
                 format!("HTTP Direct Stream • {clean_url}")
@@ -335,6 +338,7 @@ pub fn build_state_snapshot(ctx: &WebServerContext) -> WebStateSnapshot {
         config: cfg,
         alsa_devices: scan_alsa_devices(),
         lms_runtime,
+        lag_runtime,
     }
 }
 
@@ -415,27 +419,28 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
         }
         ("POST", "/api/config") => match serde_json::from_slice::<KiiaudConfig>(&body) {
             Ok(mut new_cfg) => {
-                // Preserve stored gateway_refresh_token if the incoming form left it empty and didn't explicitly clear it
-                let prev_refresh = ctx.config.read().adapter.lms.gateway_refresh_token.clone();
+                // Preserve stored lag gateway_refresh_token if incoming form left it empty
+                let prev_lag_refresh = ctx.config.read().adapter.lag.gateway_refresh_token.clone();
                 if new_cfg
                     .adapter
-                    .lms
+                    .lag
                     .gateway_refresh_token
                     .as_deref()
                     .is_none_or(|s| s.trim().is_empty())
-                    && prev_refresh.is_some()
+                    && prev_lag_refresh.is_some()
                 {
-                    new_cfg.adapter.lms.gateway_refresh_token = prev_refresh;
+                    new_cfg.adapter.lag.gateway_refresh_token = prev_lag_refresh;
                 }
 
                 *ctx.config.write() = new_cfg.clone();
-                // Trigger live hot-reload of LMS / Lyrion Anywhere adapter without daemon restart!
+                // Trigger live hot-reload of LMS (LAN) and LAG (Gateway) adapters without daemon restart!
                 reload_lms_adapter(new_cfg.adapter.lms.clone());
+                reload_lag_adapter(new_cfg.adapter.lag.clone());
 
                 let msg = if let Some(ref p) = ctx.config_path {
                     match new_cfg.save_to_file(p) {
                         Ok(()) => format!(
-                            "Saved configuration to '{}' and hot-reloaded LMS / Lyrion Anywhere adapter.",
+                            "Saved configuration to '{}' and hot-reloaded active protocol adapters.",
                             p.display()
                         ),
                         Err(e) => {
@@ -451,7 +456,7 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
                         }
                     }
                 } else {
-                    "Updated runtime configuration and hot-reloaded LMS / Lyrion Anywhere adapter."
+                    "Updated runtime configuration and hot-reloaded active protocol adapters."
                         .to_owned()
                 };
                 let ok_json = serde_json::json!({ "ok": true, "message": msg });
@@ -474,7 +479,7 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
                 .await?;
             }
         },
-        ("POST", "/api/lms/gateway-auth") => {
+        ("POST", "/api/lag/gateway-auth") | ("POST", "/api/lms/gateway-auth") => {
             match serde_json::from_slice::<LmsGatewayAuthRequest>(&body) {
                 Ok(auth_req) => {
                     let res = handle_lms_gateway_auth(auth_req, &ctx).await;
@@ -631,14 +636,14 @@ async fn handle_lms_gateway_auth(
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| cur_cfg.adapter.lms.player_name.clone());
+        .unwrap_or_else(|| cur_cfg.adapter.lag.player_name.clone());
 
     match req.action.as_str() {
         "login" => {
             let gw_url = req
                 .gateway_url
                 .as_deref()
-                .or(cur_cfg.adapter.lms.gateway_url.as_deref())
+                .or(cur_cfg.adapter.lag.gateway_url.as_deref())
                 .ok_or_else(|| "Gateway URL is required".to_owned())?
                 .to_owned();
             let user = req
@@ -656,21 +661,20 @@ async fn handle_lms_gateway_auth(
                 gateway_login(&gw_url, user, pass, req.totp.as_deref(), &player_name).await?;
 
             let mut new_cfg = cur_cfg;
-            new_cfg.adapter.lms.enabled = true;
-            new_cfg.adapter.lms.use_gateway = true;
-            new_cfg.adapter.lms.gateway_url = Some(auth_res.gateway_url.clone());
-            new_cfg.adapter.lms.gateway_username = Some(user.trim().to_owned());
-            new_cfg.adapter.lms.gateway_password = None; // Do not store raw password after obtaining refresh token
-            new_cfg.adapter.lms.gateway_pairing_code = None;
-            new_cfg.adapter.lms.gateway_refresh_token = Some(auth_res.refresh_token);
-            new_cfg.adapter.lms.gateway_device_name = Some(auth_res.device_name.clone());
-            new_cfg.adapter.lms.player_name = player_name;
+            new_cfg.adapter.lag.enabled = true;
+            new_cfg.adapter.lag.gateway_url = Some(auth_res.gateway_url.clone());
+            new_cfg.adapter.lag.gateway_username = Some(user.trim().to_owned());
+            new_cfg.adapter.lag.gateway_password = None; // Do not store raw password after obtaining refresh token
+            new_cfg.adapter.lag.gateway_pairing_code = None;
+            new_cfg.adapter.lag.gateway_refresh_token = Some(auth_res.refresh_token);
+            new_cfg.adapter.lag.gateway_device_name = Some(auth_res.device_name.clone());
+            new_cfg.adapter.lag.player_name = player_name;
 
             *ctx.config.write() = new_cfg.clone();
             if let Some(ref p) = ctx.config_path {
                 let _ = new_cfg.save_to_file(p);
             }
-            reload_lms_adapter(new_cfg.adapter.lms);
+            reload_lag_adapter(new_cfg.adapter.lag);
 
             Ok(serde_json::json!({
                 "ok": true,
@@ -688,26 +692,25 @@ async fn handle_lms_gateway_auth(
             let gw_url_opt = req
                 .gateway_url
                 .as_deref()
-                .or(cur_cfg.adapter.lms.gateway_url.as_deref())
+                .or(cur_cfg.adapter.lag.gateway_url.as_deref())
                 .map(str::to_owned);
 
             let auth_res = gateway_pair(gw_url_opt.as_deref(), code_input, &player_name).await?;
 
             let mut new_cfg = cur_cfg;
-            new_cfg.adapter.lms.enabled = true;
-            new_cfg.adapter.lms.use_gateway = true;
-            new_cfg.adapter.lms.gateway_url = Some(auth_res.gateway_url.clone());
-            new_cfg.adapter.lms.gateway_password = None;
-            new_cfg.adapter.lms.gateway_pairing_code = None;
-            new_cfg.adapter.lms.gateway_refresh_token = Some(auth_res.refresh_token);
-            new_cfg.adapter.lms.gateway_device_name = Some(auth_res.device_name.clone());
-            new_cfg.adapter.lms.player_name = player_name;
+            new_cfg.adapter.lag.enabled = true;
+            new_cfg.adapter.lag.gateway_url = Some(auth_res.gateway_url.clone());
+            new_cfg.adapter.lag.gateway_password = None;
+            new_cfg.adapter.lag.gateway_pairing_code = None;
+            new_cfg.adapter.lag.gateway_refresh_token = Some(auth_res.refresh_token);
+            new_cfg.adapter.lag.gateway_device_name = Some(auth_res.device_name.clone());
+            new_cfg.adapter.lag.player_name = player_name;
 
             *ctx.config.write() = new_cfg.clone();
             if let Some(ref p) = ctx.config_path {
                 let _ = new_cfg.save_to_file(p);
             }
-            reload_lms_adapter(new_cfg.adapter.lms);
+            reload_lag_adapter(new_cfg.adapter.lag);
 
             Ok(serde_json::json!({
                 "ok": true,
@@ -718,15 +721,15 @@ async fn handle_lms_gateway_auth(
         }
         "logout" => {
             let mut new_cfg = cur_cfg;
-            new_cfg.adapter.lms.gateway_refresh_token = None;
-            new_cfg.adapter.lms.gateway_password = None;
-            new_cfg.adapter.lms.gateway_pairing_code = None;
+            new_cfg.adapter.lag.gateway_refresh_token = None;
+            new_cfg.adapter.lag.gateway_password = None;
+            new_cfg.adapter.lag.gateway_pairing_code = None;
 
             *ctx.config.write() = new_cfg.clone();
             if let Some(ref p) = ctx.config_path {
                 let _ = new_cfg.save_to_file(p);
             }
-            reload_lms_adapter(new_cfg.adapter.lms);
+            reload_lag_adapter(new_cfg.adapter.lag);
 
             Ok(serde_json::json!({
                 "ok": true,
