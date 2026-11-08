@@ -104,6 +104,14 @@ async fn test_engine_gapless_transition_and_mock_output() {
         1000,
         "MockAudioOutput must receive all 1000 frames across both tracks"
     );
+    assert!(
+        !mock_inspector.state().is_open,
+        "Audio output device must be closed and released when the queue finishes playing"
+    );
+    assert!(
+        mock_inspector.state().stop_count >= 1,
+        "output.stop() must be called when playback ends"
+    );
 
     engine_task.abort();
 }

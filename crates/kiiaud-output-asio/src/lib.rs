@@ -915,7 +915,7 @@ impl AudioOutput for AsioAudioOutput {
 
     fn stop(&mut self) -> Result<()> {
         #[cfg(target_os = "windows")]
-        if let Some(asio) = self.asio_driver {
+        if let Some(asio) = self.asio_driver.take() {
             unsafe {
                 let vtbl = &*(*asio).lpVtbl;
                 let _ = (vtbl.stop)(asio as *mut std::ffi::c_void);
@@ -931,6 +931,7 @@ impl AudioOutput for AsioAudioOutput {
                     sys::kAsioSetIoFormat,
                     &mut io_format as *mut _ as *mut std::ffi::c_void,
                 );
+                let _ = (vtbl.Release)(asio as *mut std::ffi::c_void);
             }
         }
         *ACTIVE_ASIO_CONTEXT.lock() = None;

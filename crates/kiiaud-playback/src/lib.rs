@@ -672,15 +672,7 @@ impl PlaybackEngine {
                 if let Some(next_item) = next_opt {
                     self.start_playback(next_item);
                 } else {
-                    let mut st = self.handle.status.write();
-                    st.state = PlayerState::Stop;
-                    st.elapsed = Duration::ZERO;
-                    st.format = None;
-                    drop(st);
-                    let _ = self
-                        .handle
-                        .event_tx
-                        .send(PlaybackEvent::StateChanged(PlayerState::Stop));
+                    self.stop_playback();
                 }
             }
             WorkerNotice::TrackFailed { id, error } => {
@@ -703,19 +695,16 @@ impl PlaybackEngine {
                 {
                     self.start_playback(next_item);
                 } else {
-                    let mut st = self.handle.status.write();
-                    st.state = PlayerState::Stop;
-                    st.format = None;
-                    drop(st);
-                    let _ = self
-                        .handle
-                        .event_tx
-                        .send(PlaybackEvent::StateChanged(PlayerState::Stop));
+                    self.stop_playback();
                 }
             }
         }
     }
 }
+
+/// Idle timeout after which a paused audio output device is automatically closed and released
+/// so other applications on the system can use the DAC (analogous to `squeezelite -C`).
+const PAUSE_DEVICE_RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Dedicated OS thread for audio decoding and blocking ALSA output (`docs/ARCHITECTURE.md` Section 12).
 fn audio_worker_loop(
@@ -729,13 +718,34 @@ fn audio_worker_loop(
     let mut next_candidate: Option<PlaybackItem> = None;
     let mut prebuffered_next: Option<(PlaybackItem, SymphoniaAudioDecoder)> = None;
     let mut is_paused = false;
+    let mut output_is_open = false;
     let mut elapsed_frames: u64 = 0;
     let mut last_pos_report = Instant::now();
 
     loop {
-        // When idle or paused, block waiting for the next command
+        // When idle or paused, wait for the next command.
+        // If paused while holding the audio device open, auto-release the hardware after
+        // `PAUSE_DEVICE_RELEASE_TIMEOUT` so other applications can use the DAC.
         if current_decoder.is_none() || is_paused {
-            match worker_rx.recv() {
+            let recv_res = if is_paused && output_is_open {
+                match worker_rx.recv_timeout(PAUSE_DEVICE_RELEASE_TIMEOUT) {
+                    Ok(cmd) => Ok(cmd),
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                        tracing::info!(
+                            timeout_secs = PAUSE_DEVICE_RELEASE_TIMEOUT.as_secs(),
+                            "Playback paused; releasing audio hardware device so other applications can use it"
+                        );
+                        let _ = output.stop();
+                        output_is_open = false;
+                        continue;
+                    }
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => Err(std_mpsc::RecvError),
+                }
+            } else {
+                worker_rx.recv()
+            };
+
+            match recv_res {
                 Ok(cmd) => {
                     if !handle_worker_cmd(
                         cmd,
@@ -747,6 +757,7 @@ fn audio_worker_loop(
                         &mut next_candidate,
                         &mut prebuffered_next,
                         &mut is_paused,
+                        &mut output_is_open,
                         &mut elapsed_frames,
                     ) {
                         break;
@@ -769,6 +780,7 @@ fn audio_worker_loop(
                 &mut next_candidate,
                 &mut prebuffered_next,
                 &mut is_paused,
+                &mut output_is_open,
                 &mut elapsed_frames,
             ) {
                 return;
@@ -803,6 +815,7 @@ fn audio_worker_loop(
                 if let Err(err) = output.write(&chunk) {
                     let failed_id = cur_item.id;
                     current_decoder = None;
+                    output_is_open = false;
                     let _ = output.stop();
                     let _ = notice_tx.send(WorkerNotice::TrackFailed {
                         id: failed_id,
@@ -833,6 +846,7 @@ fn audio_worker_loop(
                     next_candidate = None;
                     match output.open(&next_dec.format()) {
                         Ok(neg_fmt) => {
+                            output_is_open = true;
                             let dur = next_dec.duration();
                             let caps = output.capabilities();
                             elapsed_frames = 0;
@@ -849,6 +863,7 @@ fn audio_worker_loop(
                         Err(err) => {
                             let failed_id = next_item.id;
                             current_decoder = None;
+                            output_is_open = false;
                             let _ = output.stop();
                             let _ = notice_tx.send(WorkerNotice::TrackFailed {
                                 id: failed_id,
@@ -859,14 +874,17 @@ fn audio_worker_loop(
                     }
                 }
 
-                // No prebuffered gapless track: drain hardware buffer and notify coordinator
+                // No prebuffered gapless track: drain hardware buffer, release audio device, and notify coordinator
                 let _ = output.drain();
+                let _ = output.stop();
+                output_is_open = false;
                 current_decoder = None;
                 let _ = notice_tx.send(WorkerNotice::TrackFinished { id: finished_id });
             }
             Err(err) => {
                 let failed_id = cur_item.id;
                 current_decoder = None;
+                output_is_open = false;
                 let _ = output.stop();
                 let _ = notice_tx.send(WorkerNotice::TrackFailed {
                     id: failed_id,
@@ -888,6 +906,7 @@ fn handle_worker_cmd(
     next_candidate: &mut Option<PlaybackItem>,
     prebuffered_next: &mut Option<(PlaybackItem, SymphoniaAudioDecoder)>,
     is_paused: &mut bool,
+    output_is_open: &mut bool,
     elapsed_frames: &mut u64,
 ) -> bool {
     match cmd {
@@ -904,6 +923,7 @@ fn handle_worker_cmd(
             match SymphoniaAudioDecoder::open_source(&item.source, policy) {
                 Ok(dec) => match output.open(&dec.format()) {
                     Ok(neg_fmt) => {
+                        *output_is_open = true;
                         let duration = dec.duration();
                         let caps = output.capabilities();
                         let _ = notice_tx.send(WorkerNotice::TrackStarted {
@@ -916,6 +936,7 @@ fn handle_worker_cmd(
                     }
                     Err(err) => {
                         *current_decoder = None;
+                        *output_is_open = false;
                         let _ = output.stop();
                         let _ = notice_tx.send(WorkerNotice::TrackFailed {
                             id: item.id,
@@ -925,6 +946,8 @@ fn handle_worker_cmd(
                 },
                 Err(err) => {
                     *current_decoder = None;
+                    *output_is_open = false;
+                    let _ = output.stop();
                     let _ = notice_tx.send(WorkerNotice::TrackFailed {
                         id: item.id,
                         error: err,
@@ -940,12 +963,43 @@ fn handle_worker_cmd(
         }
         WorkerCommand::Pause => {
             *is_paused = true;
-            let _ = output.pause();
+            if *output_is_open {
+                let _ = output.pause();
+            }
             true
         }
         WorkerCommand::Resume => {
-            *is_paused = false;
-            let _ = output.resume();
+            if let Some((item, dec, cur_fmt)) = current_decoder.as_mut() {
+                if !*output_is_open {
+                    match output.open(&dec.format()) {
+                        Ok(neg_fmt) => {
+                            *cur_fmt = neg_fmt;
+                            *output_is_open = true;
+                            *is_paused = false;
+                            tracing::info!(
+                                format = %neg_fmt,
+                                "Re-acquired audio hardware device on playback resume"
+                            );
+                        }
+                        Err(err) => {
+                            let failed_id = item.id;
+                            *current_decoder = None;
+                            *is_paused = false;
+                            *output_is_open = false;
+                            let _ = output.stop();
+                            let _ = notice_tx.send(WorkerNotice::TrackFailed {
+                                id: failed_id,
+                                error: err,
+                            });
+                        }
+                    }
+                } else {
+                    *is_paused = false;
+                    let _ = output.resume();
+                }
+            } else {
+                *is_paused = false;
+            }
             true
         }
         WorkerCommand::Seek(target) => {
@@ -953,7 +1007,9 @@ fn handle_worker_cmd(
                 if let Err(err) = dec.seek(target) {
                     tracing::warn!(%err, "seek failed");
                 } else {
-                    let _ = output.flush();
+                    if *output_is_open {
+                        let _ = output.flush();
+                    }
                     let rate_hz = match fmt {
                         AudioFormat::Pcm { sample_rate, .. } => *sample_rate,
                         AudioFormat::Dsd { rate, .. } => rate.byte_rate_hz(),
@@ -973,11 +1029,13 @@ fn handle_worker_cmd(
             *current_decoder = None;
             *next_candidate = None;
             *prebuffered_next = None;
+            *output_is_open = false;
             *elapsed_frames = 0;
             let _ = output.stop();
             true
         }
         WorkerCommand::Shutdown => {
+            *output_is_open = false;
             let _ = output.stop();
             false
         }

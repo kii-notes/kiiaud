@@ -1308,8 +1308,19 @@ async fn handle_slimproto_server_packet(
                 replies.push(build_setd_name_packet(effective_player_name));
             }
         }
-        b"audg" | b"aude" => {
+        b"audg" => {
             // In bit-perfect mode, software volume attenuation is intentionally bypassed (`D-008`).
+        }
+        b"aude" => {
+            // SlimProto `aude` carries `[spdif_enable, dac_enable]`.
+            // When the user powers off the player in LMS UI (`dac_enable == 0`), stop playback
+            // and release the audio hardware device immediately.
+            if data.get(1) == Some(&0) || (data.len() == 1 && data[0] == 0) {
+                tracing::info!(
+                    "LMS SlimProto aude power-off received; stopping playback and releasing audio device"
+                );
+                let _ = engine.send(PlaybackCommand::Stop).await;
+            }
         }
         _ => {}
     }

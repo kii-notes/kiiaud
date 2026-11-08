@@ -849,19 +849,18 @@ impl AudioOutput for WasapiAudioOutput {
             let _ = thread.join();
         }
 
+        self.render_client = None;
+
         if let Some(client) = self.client.take() {
-            if self.is_playing {
-                let _ = unsafe { client.Stop() };
-                let _ = unsafe { client.Reset() };
-                self.is_playing = false;
-            }
+            let _ = unsafe { client.Stop() };
+            let _ = unsafe { client.Reset() };
+            self.is_playing = false;
         }
 
         if let Some(mmcss) = self.mmcss_handle.take() {
             let _ = unsafe { AvRevertMmThreadCharacteristics(mmcss) };
         }
 
-        self.render_client = None;
         self.hw_format = None;
         self.active_format = None;
         self.dop_encoder = None;
