@@ -49,7 +49,7 @@ fn install_service() -> Result<()> {
     println!("Registering scheduled task 'kiiaud' (runs at user logon in background)...");
 
     let run_cmd = format!("\"{}\" --background", exe_str);
-    let output = std::process::Command::new("schtasks")
+    let mut output = std::process::Command::new("schtasks")
         .args([
             "/create",
             "/tn",
@@ -65,12 +65,52 @@ fn install_service() -> Result<()> {
         .output()
         .context("Failed to execute schtasks.exe (is Task Scheduler available?)")?;
 
+    let mut elevated = true;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        bail!("Failed to register scheduled task: {}", err.trim());
+        // If highest privilege fails due to non-elevated user token, fallback to standard user privilege
+        println!(
+            "Notice: Could not register with highest privileges ({}).",
+            err.trim()
+        );
+        println!("Retrying registration with standard user privileges...");
+
+        output = std::process::Command::new("schtasks")
+            .args([
+                "/create",
+                "/tn",
+                "kiiaud",
+                "/tr",
+                run_cmd.as_str(),
+                "/sc",
+                "onlogon",
+                "/f",
+            ])
+            .output()
+            .context("Failed to execute schtasks.exe")?;
+        elevated = false;
     }
 
-    println!("\n[OK] Successfully registered 'kiiaud' background task!");
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "Failed to register scheduled task: {}\n\n\
+             Troubleshooting suggestions:\n\
+             1. To register with elevated rights, open PowerShell as Administrator ('Run as administrator')\n\
+                and re-run: .\\kiiaud.exe --service-install\n\
+             2. Ensure Windows Security / Antivirus is not blocking schtasks.exe or kiiaud.exe.",
+            err.trim()
+        );
+    }
+
+    println!(
+        "\n[OK] Successfully registered 'kiiaud' background task{}!",
+        if elevated {
+            " (with highest administrator privileges)"
+        } else {
+            " (with standard user privileges)"
+        }
+    );
     println!("Features:");
     println!("  - Auto-start: Starts automatically whenever you log into Windows.");
     println!(
