@@ -204,7 +204,7 @@ jobs:
           PY
           printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: %s %s-updates %s-backports %s-security\nComponents: main restricted universe multiverse\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" "$SUITE" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
           sudo apt-get update -o Acquire::Retries=3 || (sleep 5 && sudo apt-get update -o Acquire::Retries=3)
-          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev:arm64
+          sudo apt-get install -y --allow-downgrades -o Acquire::Retries=3 libasound2-dev:arm64
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
