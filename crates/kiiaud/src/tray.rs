@@ -24,6 +24,17 @@ pub fn attach_parent_console() {
 #[cfg(not(windows))]
 pub fn attach_parent_console() {}
 
+/// Return `true` if a Windows console window is currently attached and visible.
+#[cfg(windows)]
+fn is_console_visible() -> bool {
+    use windows::Win32::System::Console::GetConsoleWindow;
+    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    unsafe {
+        let con = GetConsoleWindow();
+        !con.is_invalid() && IsWindowVisible(con).as_bool()
+    }
+}
+
 /// Toggle the console window visibility on Windows (allocating one if none is attached).
 #[cfg(windows)]
 fn toggle_console_window() {
@@ -197,8 +208,7 @@ unsafe extern "system" fn tray_wnd_proc(
                                 );
                             }
 
-                            let con = GetConsoleWindow();
-                            let con_visible = !con.is_invalid() && IsWindowVisible(con).as_bool();
+                            let con_visible = is_console_visible();
                             let con_text = to_wide(if con_visible {
                                 "Hide Console Window"
                             } else {

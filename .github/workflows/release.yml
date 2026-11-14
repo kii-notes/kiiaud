@@ -96,17 +96,19 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
           SUITE=$(. /etc/os-release && echo "${VERSION_CODENAME:-noble}")
-          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            if grep -q "^Architectures:" /etc/apt/sources.list.d/ubuntu.sources; then
-              sudo sed -i 's/^Architectures: .*/Architectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            if grep -q "^Architectures:" "$f"; then
+              sudo sed -i 's/^Architectures: .*/Architectures: amd64/' "$f"
             else
-              sudo sed -i '/^URIs:/i Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+              sudo sed -i '/^URIs:/i Architectures: amd64' "$f"
             fi
-            printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: %s %s-updates %s-backports %s-security\nComponents: main restricted universe multiverse\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" "$SUITE" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
-          else
-            sudo sed -i -e 's/deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
-            printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-updates main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-security main restricted universe multiverse\n" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
-          fi
+          done
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+            [ -f "$f" ] || continue
+            sudo sed -i -E 's/^deb (\[[^]]*\])? ?http/deb [arch=amd64] http/g' "$f"
+          done
+          printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: %s %s-updates %s-backports %s-security\nComponents: main restricted universe multiverse\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" "$SUITE" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
           sudo apt-get update || (sleep 5 && sudo apt-get update)
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64
 
