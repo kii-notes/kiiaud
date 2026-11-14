@@ -1,0 +1,496 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Platform target to build'
+        type: choice
+        required: true
+        default: 'all'
+        options:
+          - all
+          - linux-x86_64
+          - linux-arm64
+          - windows-x86_64
+          - android-arm64
+          - android-armv7
+  workflow_call:
+    inputs:
+      target:
+        description: 'Platform target to build'
+        type: string
+        required: false
+        default: 'all'
+      version:
+        description: 'Version label for packaged archives (defaults to short commit SHA)'
+        type: string
+        required: false
+        default: ''
+      artifact_prefix:
+        description: 'Prefix for uploaded GitHub Actions artifact names'
+        type: string
+        required: false
+        default: 'build'
+
+permissions:
+  contents: read
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # 1. Linux x86_64
+  # ----------------------------------------------------------------------------
+  build-linux-x86_64:
+    name: Build Linux x86_64
+    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'linux-x86_64' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          VER="${{ inputs.version }}"
+          if [ -z "${VER}" ]; then
+            VER="${SHORT_SHA}"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          cat <<EOF > build-metadata.json
+          {
+            "platform": "linux",
+            "architecture": "x86_64",
+            "rust_target": "x86_64-unknown-linux-gnu",
+            "version": "${VER}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "ref": "${GITHUB_REF}",
+            "ref_name": "${GITHUB_REF_NAME}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Install ALSA development library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build release binaries
+        run: cargo build --release --target x86_64-unknown-linux-gnu --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist/contrib
+          cp target/x86_64-unknown-linux-gnu/release/kiiaud dist/
+          cp target/x86_64-unknown-linux-gnu/release/kiiaudctl dist/
+          cp -r contrib/* dist/contrib/
+          cp contrib/kiiaud.toml.example README.md LICENSE-MIT LICENSE-APACHE dist/
+          ARCHIVE_NAME="kiiaud-${VERSION}-linux-x86_64.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C dist .
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix || 'build' }}-linux-x86_64-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: |
+            kiiaud-*-linux-x86_64.tar.gz
+            kiiaud-*-linux-x86_64.tar.gz.sha256
+            build-metadata.json
+
+  # ----------------------------------------------------------------------------
+  # 2. Linux ARM64 (aarch64 / Raspberry Pi)
+  # ----------------------------------------------------------------------------
+  build-linux-arm64:
+    name: Build Linux ARM64
+    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'linux-arm64' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          VER="${{ inputs.version }}"
+          if [ -z "${VER}" ]; then
+            VER="${SHORT_SHA}"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          cat <<EOF > build-metadata.json
+          {
+            "platform": "linux",
+            "architecture": "arm64",
+            "rust_target": "aarch64-unknown-linux-gnu",
+            "version": "${VER}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "ref": "${GITHUB_REF}",
+            "ref_name": "${GITHUB_REF_NAME}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Setup multiarch & ARM64 cross-dependencies
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo dpkg --add-architecture arm64
+          SUITE=$(. /etc/os-release && echo "${VERSION_CODENAME:-noble}")
+          sudo python3 - <<'PY'
+          import glob, re
+
+          for path in sorted(glob.glob('/etc/apt/sources.list.d/*.sources')):
+              with open(path, 'r') as f:
+                  content = f.read()
+              stanzas = re.split(r'(\n\s*\n)', content)
+              out = []
+              for part in stanzas:
+                  if not part.strip() or 'URIs:' not in part:
+                      out.append(part)
+                      continue
+                  if re.search(r'^Architectures:', part, re.M):
+                      part = re.sub(r'^Architectures:.*$', 'Architectures: amd64', part, flags=re.M)
+                  else:
+                      part = re.sub(r'^(URIs:)', r'Architectures: amd64\n\1', part, count=1, flags=re.M)
+                  out.append(part)
+              with open(path, 'w') as f:
+                  f.write(''.join(out))
+
+          list_files = ['/etc/apt/sources.list'] + sorted(glob.glob('/etc/apt/sources.list.d/*.list'))
+          for path in list_files:
+              try:
+                  with open(path, 'r') as f:
+                      lines = f.readlines()
+              except FileNotFoundError:
+                  continue
+              new_lines = []
+              for line in lines:
+                  m = re.match(r'^(\s*deb(?:-src)?\s+)\[([^\]]*)\](\s+.*)$', line)
+                  if m:
+                      prefix, opts, rest = m.groups()
+                      if re.search(r'\barch=', opts):
+                          opts = re.sub(r'\barch=\S+', 'arch=amd64', opts)
+                      else:
+                          opts = f'arch=amd64 {opts}'.strip()
+                      line = f'{prefix}[{opts}]{rest}\n'
+                  else:
+                      m2 = re.match(r'^(\s*deb(?:-src)?\s+)(\S+.*)$', line)
+                      if m2 and not line.lstrip().startswith('#'):
+                          line = f'{m2.group(1)}[arch=amd64] {m2.group(2)}\n'
+                  new_lines.append(line)
+              with open(path, 'w') as f:
+                  f.writelines(new_lines)
+          PY
+          printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: %s %s-updates %s-backports %s-security\nComponents: main restricted universe multiverse\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" "$SUITE" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
+          sudo apt-get update -o Acquire::Retries=3 || (sleep 5 && sudo apt-get update -o Acquire::Retries=3)
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev:arm64
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Build ARM64 release binaries
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: cargo build --release --target aarch64-unknown-linux-gnu --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist/contrib
+          cp target/aarch64-unknown-linux-gnu/release/kiiaud dist/
+          cp target/aarch64-unknown-linux-gnu/release/kiiaudctl dist/
+          cp -r contrib/* dist/contrib/
+          cp contrib/kiiaud.toml.example README.md LICENSE-MIT LICENSE-APACHE dist/
+          ARCHIVE_NAME="kiiaud-${VERSION}-linux-arm64.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C dist .
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix || 'build' }}-linux-arm64-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: |
+            kiiaud-*-linux-arm64.tar.gz
+            kiiaud-*-linux-arm64.tar.gz.sha256
+            build-metadata.json
+
+  # ----------------------------------------------------------------------------
+  # 3. Windows x86_64
+  # ----------------------------------------------------------------------------
+  build-windows-x86_64:
+    name: Build Windows x86_64
+    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'windows-x86_64' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          VER="${{ inputs.version }}"
+          if [ -z "${VER}" ]; then
+            VER="${SHORT_SHA}"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          cat <<EOF > build-metadata.json
+          {
+            "platform": "windows",
+            "architecture": "x86_64",
+            "rust_target": "x86_64-pc-windows-msvc",
+            "version": "${VER}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "ref": "${GITHUB_REF}",
+            "ref_name": "${GITHUB_REF_NAME}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows release binaries
+        run: cargo build --release --target x86_64-pc-windows-msvc --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\kiiaud.exe dist\
+          Copy-Item target\x86_64-pc-windows-msvc\release\kiiaudctl.exe dist\
+          Copy-Item contrib\kiiaud.toml.example dist\
+          Copy-Item README.md dist\
+          Copy-Item LICENSE-MIT dist\
+          Copy-Item LICENSE-APACHE dist\
+          $ArchiveName = "kiiaud-$($env:VERSION)-windows-x86_64.zip"
+          Compress-Archive -Path dist\* -DestinationPath $ArchiveName
+          $Hash = (Get-FileHash -Algorithm SHA256 $ArchiveName).Hash.ToLower()
+          "$Hash  $ArchiveName" | Out-File -Encoding ascii "$ArchiveName.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix || 'build' }}-windows-x86_64-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: |
+            kiiaud-*-windows-x86_64.zip
+            kiiaud-*-windows-x86_64.zip.sha256
+            build-metadata.json
+
+  # ----------------------------------------------------------------------------
+  # 4. Android ARM64 (aarch64-linux-android)
+  # ----------------------------------------------------------------------------
+  build-android-arm64:
+    name: Build Android ARM64
+    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'android-arm64' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          VER="${{ inputs.version }}"
+          if [ -z "${VER}" ]; then
+            VER="${SHORT_SHA}"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          cat <<EOF > build-metadata.json
+          {
+            "platform": "android",
+            "architecture": "arm64",
+            "rust_target": "aarch64-linux-android",
+            "version": "${VER}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "ref": "${GITHUB_REF}",
+            "ref_name": "${GITHUB_REF_NAME}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          link-to-sdk: true
+
+      - name: Expose ANDROID_NDK_HOME
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+
+      - name: Configure Android NDK toolchain environment
+        run: |
+          LLVM_BIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${LLVM_BIN}" >> $GITHUB_PATH
+          echo "CC_aarch64_linux_android=${LLVM_BIN}/aarch64-linux-android24-clang" >> $GITHUB_ENV
+          echo "CXX_aarch64_linux_android=${LLVM_BIN}/aarch64-linux-android24-clang++" >> $GITHUB_ENV
+          echo "AR_aarch64_linux_android=${LLVM_BIN}/llvm-ar" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${LLVM_BIN}/aarch64-linux-android24-clang" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=${LLVM_BIN}/llvm-ar" >> $GITHUB_ENV
+          ln -sf "${LLVM_BIN}/aarch64-linux-android24-clang" "${LLVM_BIN}/aarch64-linux-android-clang"
+          ln -sf "${LLVM_BIN}/aarch64-linux-android24-clang++" "${LLVM_BIN}/aarch64-linux-android-clang++"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Build Android release binaries
+        run: cargo build --release --target aarch64-linux-android --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/aarch64-linux-android/release/kiiaud dist/
+          cp target/aarch64-linux-android/release/kiiaudctl dist/
+          cp contrib/kiiaud.toml.example README.md LICENSE-MIT LICENSE-APACHE dist/
+          ARCHIVE_NAME="kiiaud-${VERSION}-android-arm64.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C dist .
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix || 'build' }}-android-arm64-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: |
+            kiiaud-*-android-arm64.tar.gz
+            kiiaud-*-android-arm64.tar.gz.sha256
+            build-metadata.json
+
+  # ----------------------------------------------------------------------------
+  # 5. Android ARMv7 32-bit (armv7-linux-androideabi / armeabi-v7a)
+  # ----------------------------------------------------------------------------
+  build-android-armv7:
+    name: Build Android ARMv7 (32-bit)
+    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'android-armv7' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          VER="${{ inputs.version }}"
+          if [ -z "${VER}" ]; then
+            VER="${SHORT_SHA}"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          cat <<EOF > build-metadata.json
+          {
+            "platform": "android",
+            "architecture": "armv7",
+            "rust_target": "armv7-linux-androideabi",
+            "version": "${VER}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "ref": "${GITHUB_REF}",
+            "ref_name": "${GITHUB_REF_NAME}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          link-to-sdk: true
+
+      - name: Expose ANDROID_NDK_HOME
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+
+      - name: Configure Android NDK toolchain environment
+        run: |
+          LLVM_BIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${LLVM_BIN}" >> $GITHUB_PATH
+          echo "CC_armv7_linux_androideabi=${LLVM_BIN}/armv7a-linux-androideabi24-clang" >> $GITHUB_ENV
+          echo "CXX_armv7_linux_androideabi=${LLVM_BIN}/armv7a-linux-androideabi24-clang++" >> $GITHUB_ENV
+          echo "AR_armv7_linux_androideabi=${LLVM_BIN}/llvm-ar" >> $GITHUB_ENV
+          echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=${LLVM_BIN}/armv7a-linux-androideabi24-clang" >> $GITHUB_ENV
+          echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_AR=${LLVM_BIN}/llvm-ar" >> $GITHUB_ENV
+          ln -sf "${LLVM_BIN}/armv7a-linux-androideabi24-clang" "${LLVM_BIN}/arm-linux-androideabi-clang"
+          ln -sf "${LLVM_BIN}/armv7a-linux-androideabi24-clang++" "${LLVM_BIN}/arm-linux-androideabi-clang++"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-linux-androideabi
+
+      - name: Build Android 32-bit release binaries
+        run: cargo build --release --target armv7-linux-androideabi --bin kiiaud --bin kiiaudctl
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/armv7-linux-androideabi/release/kiiaud dist/
+          cp target/armv7-linux-androideabi/release/kiiaudctl dist/
+          cp contrib/kiiaud.toml.example README.md LICENSE-MIT LICENSE-APACHE dist/
+          ARCHIVE_NAME="kiiaud-${VERSION}-android-armv7.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C dist .
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix || 'build' }}-android-armv7-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: |
+            kiiaud-*-android-armv7.tar.gz
+            kiiaud-*-android-armv7.tar.gz.sha256
+            build-metadata.json
