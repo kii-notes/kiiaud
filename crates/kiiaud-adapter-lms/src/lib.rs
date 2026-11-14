@@ -491,7 +491,9 @@ pub async fn run_lag_adapter(initial_config: LagAdapterConfig, engine: EngineHan
                 st.connected = false;
                 st.endpoint.clear();
             });
-            tracing::debug!("Lyrion Anywhere (Gateway) adapter is disabled; waiting for configuration change");
+            tracing::debug!(
+                "Lyrion Anywhere (Gateway) adapter is disabled; waiting for configuration change"
+            );
             if rx.changed().await.is_err() {
                 return Ok(());
             }
@@ -1043,8 +1045,7 @@ pub fn resolve_hardware_capabilities(
             .unwrap_or(192_000)
     });
 
-    let dsd = dsd_support
-        .unwrap_or_else(|| out_caps.is_some_and(|c| c.dsd_native || c.dsd_dop));
+    let dsd = dsd_support.unwrap_or_else(|| out_caps.is_some_and(|c| c.dsd_native || c.dsd_dop));
 
     (max_rate, dsd)
 }
@@ -1241,7 +1242,10 @@ async fn handle_slimproto_server_packet(
                         AudioSource::HttpStream { url, headers }
                     } else {
                         let host = if server_ip_raw == 0 {
-                            default_http_target.map(|(h, _)| h).unwrap_or("127.0.0.1").to_owned()
+                            default_http_target
+                                .map(|(h, _)| h)
+                                .unwrap_or("127.0.0.1")
+                                .to_owned()
                         } else {
                             Ipv4Addr::from(server_ip_raw).to_string()
                         };

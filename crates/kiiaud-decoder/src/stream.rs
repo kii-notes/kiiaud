@@ -6,12 +6,8 @@
 //! with a dedicated 4 MiB RAM ring-buffer to completely decouple real-time audio decoding
 //! and WASAPI/ALSA output from network RTT latency and Wi-Fi/LAN jitter.
 
-use kiiaud_core::telemetry::{
-    get_configured_stream_buffer_mb, update_stream_telemetry,
-};
-pub use kiiaud_core::telemetry::{
-    StreamTelemetry, get_stream_telemetry, reset_stream_telemetry,
-};
+pub use kiiaud_core::telemetry::{StreamTelemetry, get_stream_telemetry, reset_stream_telemetry};
+use kiiaud_core::telemetry::{get_configured_stream_buffer_mb, update_stream_telemetry};
 use kiiaud_core::{KiiaudError, Result, strip_uri_auth};
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
@@ -66,8 +62,10 @@ pub fn update_auto_stream_buffer_bitrate(bytes_per_sec: u64) {
     if get_configured_stream_buffer_mb() > 0 || bytes_per_sec == 0 {
         return;
     }
-    let target = (bytes_per_sec.saturating_mul(AUTO_TARGET_BUFFER_SECONDS) as usize)
-        .clamp(MIN_AUTO_STREAM_BUFFER_CAPACITY, MAX_AUTO_STREAM_BUFFER_CAPACITY);
+    let target = (bytes_per_sec.saturating_mul(AUTO_TARGET_BUFFER_SECONDS) as usize).clamp(
+        MIN_AUTO_STREAM_BUFFER_CAPACITY,
+        MAX_AUTO_STREAM_BUFFER_CAPACITY,
+    );
     if let Some(cell) = ACTIVE_STREAM_CAPACITY.get() {
         if let Some(cap) = cell.lock().as_ref() {
             cap.store(target, Ordering::Relaxed);
@@ -433,8 +431,9 @@ pub fn open_http_stream(
     };
 
     let buf_capacity = resolve_stream_buffer_capacity(ext_hint.as_deref());
-    let prebuffered_reader: Box<dyn Read + Send> =
-        Box::new(PrebufferedStreamReader::with_capacity(base_reader, buf_capacity));
+    let prebuffered_reader: Box<dyn Read + Send> = Box::new(
+        PrebufferedStreamReader::with_capacity(base_reader, buf_capacity),
+    );
 
     Ok((
         Box::new(StreamMediaSource::new(prebuffered_reader, content_len)),
@@ -467,8 +466,9 @@ pub fn open_tcp_stream(
     }
 
     let buf_capacity = resolve_stream_buffer_capacity(format_hint.as_deref());
-    let prebuffered_reader: Box<dyn Read + Send> =
-        Box::new(PrebufferedStreamReader::with_capacity(Box::new(stream), buf_capacity));
+    let prebuffered_reader: Box<dyn Read + Send> = Box::new(
+        PrebufferedStreamReader::with_capacity(Box::new(stream), buf_capacity),
+    );
 
     Ok((
         Box::new(StreamMediaSource::new(prebuffered_reader, None)),
@@ -590,11 +590,20 @@ mod tests {
     #[test]
     fn test_resolve_stream_buffer_capacity_auto_and_override() {
         kiiaud_core::telemetry::set_configured_stream_buffer_mb(0);
-        assert_eq!(resolve_stream_buffer_capacity(Some("flac")), 8 * 1024 * 1024);
-        assert_eq!(resolve_stream_buffer_capacity(Some("dsf")), 32 * 1024 * 1024);
+        assert_eq!(
+            resolve_stream_buffer_capacity(Some("flac")),
+            8 * 1024 * 1024
+        );
+        assert_eq!(
+            resolve_stream_buffer_capacity(Some("dsf")),
+            32 * 1024 * 1024
+        );
 
         kiiaud_core::telemetry::set_configured_stream_buffer_mb(24);
-        assert_eq!(resolve_stream_buffer_capacity(Some("flac")), 24 * 1024 * 1024);
+        assert_eq!(
+            resolve_stream_buffer_capacity(Some("flac")),
+            24 * 1024 * 1024
+        );
         kiiaud_core::telemetry::set_configured_stream_buffer_mb(0);
     }
 }

@@ -19,6 +19,8 @@ use kiiaud_output::AudioOutput;
 use kiiaud_output::dop::DopEncoder;
 
 #[cfg(target_os = "windows")]
+use parking_lot::{Condvar, Mutex};
+#[cfg(target_os = "windows")]
 use std::collections::VecDeque;
 #[cfg(target_os = "windows")]
 use std::sync::Arc;
@@ -28,8 +30,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 #[cfg(target_os = "windows")]
 use std::time::Duration;
-#[cfg(target_os = "windows")]
-use parking_lot::{Condvar, Mutex};
 
 #[cfg(target_os = "windows")]
 use windows::{
@@ -39,16 +39,16 @@ use windows::{
             AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
             AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-            DEVICE_STATE_ACTIVE, IAudioClient,
-            IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
-            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eConsole, eRender,
+            DEVICE_STATE_ACTIVE, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator,
+            MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
+            eConsole, eRender,
         },
         System::Com::{
             CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, STGM_READ,
         },
         System::Threading::{
-            AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW,
-            SetEvent, WaitForSingleObject,
+            AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, SetEvent,
+            WaitForSingleObject,
         },
         UI::Shell::PropertiesSystem::PROPERTYKEY,
     },
@@ -755,7 +755,9 @@ impl AudioOutput for WasapiAudioOutput {
         // Throttle decoder thread when the ring buffer reaches the target cushion
         let mut ring = shared.ring.lock();
         while ring.len() >= self.target_buffer_bytes && !shared.stop_flag.load(Ordering::Relaxed) {
-            shared.condvar_space.wait_for(&mut ring, Duration::from_millis(50));
+            shared
+                .condvar_space
+                .wait_for(&mut ring, Duration::from_millis(50));
         }
 
         if shared.stop_flag.load(Ordering::Relaxed) {
@@ -802,7 +804,9 @@ impl AudioOutput for WasapiAudioOutput {
         // Wait until all decoded PCM frames have been consumed by the render thread
         let mut ring = shared.ring.lock();
         while !ring.is_empty() && !shared.stop_flag.load(Ordering::Relaxed) {
-            shared.condvar_empty.wait_for(&mut ring, Duration::from_millis(50));
+            shared
+                .condvar_empty
+                .wait_for(&mut ring, Duration::from_millis(50));
         }
         drop(ring);
 

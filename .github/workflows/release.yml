@@ -107,7 +107,7 @@ jobs:
             sudo sed -i -e 's/deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
             printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-updates main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-security main restricted universe multiverse\n" "$SUITE" "$SUITE" "$SUITE" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
           fi
-          sudo apt-get update
+          sudo apt-get update || (sleep 5 && sudo apt-get update)
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64
 
       - name: Setup Rust toolchain

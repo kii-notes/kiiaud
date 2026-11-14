@@ -941,28 +941,28 @@ fn handle_worker_cmd(
                     };
                     kiiaud_decoder::stream::update_auto_stream_buffer_bitrate(bytes_per_sec);
                     match output.open(&src_fmt) {
-                    Ok(neg_fmt) => {
-                        *output_is_open = true;
-                        let duration = dec.duration();
-                        let caps = output.capabilities();
-                        let _ = notice_tx.send(WorkerNotice::TrackStarted {
-                            item: item.clone(),
-                            format: neg_fmt,
-                            duration,
-                            capabilities: caps,
-                        });
-                        *current_decoder = Some((item, dec, neg_fmt));
+                        Ok(neg_fmt) => {
+                            *output_is_open = true;
+                            let duration = dec.duration();
+                            let caps = output.capabilities();
+                            let _ = notice_tx.send(WorkerNotice::TrackStarted {
+                                item: item.clone(),
+                                format: neg_fmt,
+                                duration,
+                                capabilities: caps,
+                            });
+                            *current_decoder = Some((item, dec, neg_fmt));
+                        }
+                        Err(err) => {
+                            *current_decoder = None;
+                            *output_is_open = false;
+                            let _ = output.stop();
+                            let _ = notice_tx.send(WorkerNotice::TrackFailed {
+                                id: item.id,
+                                error: err,
+                            });
+                        }
                     }
-                    Err(err) => {
-                        *current_decoder = None;
-                        *output_is_open = false;
-                        let _ = output.stop();
-                        let _ = notice_tx.send(WorkerNotice::TrackFailed {
-                            id: item.id,
-                            error: err,
-                        });
-                    }
-                }
                 }
                 Err(err) => {
                     *current_decoder = None;

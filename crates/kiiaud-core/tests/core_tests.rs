@@ -225,7 +225,10 @@ player_name = "Living Room Pi"
     assert!(!cfg.adapter.lms.enabled);
     assert_eq!(cfg.adapter.lms.server_host, "192.168.1.50");
     assert!(cfg.adapter.lag.enabled);
-    assert_eq!(cfg.adapter.lag.gateway_url.as_deref(), Some("https://music.home.arpa"));
+    assert_eq!(
+        cfg.adapter.lag.gateway_url.as_deref(),
+        Some("https://music.home.arpa")
+    );
     assert_eq!(cfg.adapter.lag.gateway_quality, "high");
     assert_eq!(cfg.adapter.lag.player_name, "Living Room Pi");
 
@@ -246,9 +249,18 @@ gateway_quality = "low"
     assert!(!migrated.adapter.lms.enabled);
     // LAG should inherit enabled, url, user, token, quality, and name
     assert!(migrated.adapter.lag.enabled);
-    assert_eq!(migrated.adapter.lag.gateway_url.as_deref(), Some("https://remote.example.com"));
-    assert_eq!(migrated.adapter.lag.gateway_username.as_deref(), Some("alice"));
-    assert_eq!(migrated.adapter.lag.gateway_refresh_token.as_deref(), Some("tok_xyz"));
+    assert_eq!(
+        migrated.adapter.lag.gateway_url.as_deref(),
+        Some("https://remote.example.com")
+    );
+    assert_eq!(
+        migrated.adapter.lag.gateway_username.as_deref(),
+        Some("alice")
+    );
+    assert_eq!(
+        migrated.adapter.lag.gateway_refresh_token.as_deref(),
+        Some("tok_xyz")
+    );
     assert_eq!(migrated.adapter.lag.gateway_quality, "low");
     assert_eq!(migrated.adapter.lag.player_name, "Legacy Player");
 }

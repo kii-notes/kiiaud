@@ -455,7 +455,8 @@ impl KiiaudConfig {
     }
 
     pub fn from_toml_str(s: &str) -> Result<Self> {
-        let mut cfg: Self = toml::from_str(s).map_err(|e| KiiaudError::Config(format!("TOML parse error: {e}")))?;
+        let mut cfg: Self =
+            toml::from_str(s).map_err(|e| KiiaudError::Config(format!("TOML parse error: {e}")))?;
         cfg.migrate_legacy_settings();
         Ok(cfg)
     }

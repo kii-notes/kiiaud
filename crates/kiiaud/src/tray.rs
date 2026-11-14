@@ -26,16 +26,18 @@ pub fn attach_parent_console() {}
 
 /// Toggle the console window visibility on Windows (allocating one if none is attached).
 #[cfg(windows)]
-unsafe fn toggle_console_window() {
+fn toggle_console_window() {
     use windows::Win32::System::Console::{AllocConsole, GetConsoleWindow};
     use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, SW_HIDE, SW_SHOW, ShowWindow};
-    let con = GetConsoleWindow();
-    if con.is_invalid() {
-        let _ = AllocConsole();
-    } else if IsWindowVisible(con).as_bool() {
-        let _ = ShowWindow(con, SW_HIDE);
-    } else {
-        let _ = ShowWindow(con, SW_SHOW);
+    unsafe {
+        let con = GetConsoleWindow();
+        if con.is_invalid() {
+            let _ = AllocConsole();
+        } else if IsWindowVisible(con).as_bool() {
+            let _ = ShowWindow(con, SW_HIDE);
+        } else {
+            let _ = ShowWindow(con, SW_SHOW);
+        }
     }
 }
 
@@ -149,9 +151,9 @@ unsafe extern "system" fn tray_wnd_proc(
     use windows::Win32::UI::Shell::{NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW};
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, DefWindowProcW, DestroyMenu, DestroyWindow, GetCursorPos,
-        MF_GRAYED, MF_SEPARATOR, MF_STRING, PostQuitMessage, SetForegroundWindow,
-        TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY,
-        WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+        MF_GRAYED, MF_SEPARATOR, MF_STRING, PostQuitMessage, SetForegroundWindow, TPM_BOTTOMALIGN,
+        TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+        WM_RBUTTONUP,
     };
     use windows::core::PCWSTR;
 

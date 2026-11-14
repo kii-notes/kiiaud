@@ -589,9 +589,11 @@ impl AudioOutput for AlsaAudioOutput {
                         );
                         if self.open(&req_fmt).is_ok() {
                             if let Some(new_pcm) = self.pcm.as_ref() {
-                                if let Ok(frames) =
-                                    self.write_raw_bytes(new_pcm, &self.byte_scratch, bytes_per_frame)
-                                {
+                                if let Ok(frames) = self.write_raw_bytes(
+                                    new_pcm,
+                                    &self.byte_scratch,
+                                    bytes_per_frame,
+                                ) {
                                     tracing::info!(
                                         device = %self.config.device,
                                         attempt,
@@ -1121,7 +1123,10 @@ Playback:
         assert_eq!(name, Some("Generic USB DAC".to_owned()));
         assert_eq!(rates, vec![44100, 48000]);
         assert_eq!(bits, vec![16]);
-        assert!(!dsd_native, "Expected PCM-only DAC to report dsd_native as false");
+        assert!(
+            !dsd_native,
+            "Expected PCM-only DAC to report dsd_native as false"
+        );
     }
 
     #[test]
