@@ -6,53 +6,77 @@
 //! with a dedicated 4 MiB RAM ring-buffer to completely decouple real-time audio decoding
 //! and WASAPI/ALSA output from network RTT latency and Wi-Fi/LAN jitter.
 
+use kiiaud_core::telemetry::{
+    get_configured_stream_buffer_mb, update_stream_telemetry,
+};
+pub use kiiaud_core::telemetry::{
+    StreamTelemetry, get_stream_telemetry, reset_stream_telemetry,
+};
 use kiiaud_core::{KiiaudError, Result, strip_uri_auth};
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 use symphonia::core::io::MediaSource;
 
-/// Capacity of the network pre-buffering RAM ring-buffer (8 MiB $\approx$ 40-80 seconds of 16/44.1 FLAC).
+/// Default capacity of the network pre-buffering RAM ring-buffer (8 MiB $\approx$ 40-80 seconds of 16/44.1 FLAC).
 pub const STREAM_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
+/// Minimum capacity when auto-scaling by bitrate (8 MiB).
+pub const MIN_AUTO_STREAM_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
+/// Maximum capacity when auto-scaling by bitrate (64 MiB).
+pub const MAX_AUTO_STREAM_BUFFER_CAPACITY: usize = 64 * 1024 * 1024;
+/// Target pre-buffer duration in seconds when auto-scaling by bitrate.
+pub const AUTO_TARGET_BUFFER_SECONDS: u64 = 8;
 
 /// Initial watermark bytes before playback starts to ensure glitch-free initial playback (256 KiB).
 pub const INITIAL_PREBUFFER_BYTES: usize = 256 * 1024;
 
-/// Real-time telemetry snapshot of the active streaming buffer.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct StreamTelemetry {
-    pub total_bytes_read: u64,
-    pub buffer_occupancy: u32,
-    pub buffer_capacity: u32,
+static ACTIVE_STREAM_CAPACITY: OnceLock<Mutex<Option<Arc<AtomicUsize>>>> = OnceLock::new();
+
+fn register_active_capacity(cap: &Arc<AtomicUsize>) {
+    let cell = ACTIVE_STREAM_CAPACITY.get_or_init(|| Mutex::new(None));
+    *cell.lock() = Some(Arc::clone(cap));
 }
 
-static STREAM_TELEMETRY: OnceLock<Mutex<StreamTelemetry>> = OnceLock::new();
-
-/// Retrieve current real-time streaming buffer telemetry (used by `kiiaud-adapter-lms` for STAT packets).
-pub fn get_stream_telemetry() -> StreamTelemetry {
-    STREAM_TELEMETRY
-        .get_or_init(|| Mutex::new(StreamTelemetry::default()))
-        .lock()
-        .clone()
+/// Resolve initial pre-buffer capacity in bytes from `stream_buffer_mb` config (`0` = auto)
+/// and an optional format hint (`dsf`, `dff`, `wv`, etc.).
+pub fn resolve_stream_buffer_capacity(format_hint: Option<&str>) -> usize {
+    let configured_mb = get_configured_stream_buffer_mb();
+    if configured_mb > 0 {
+        return (configured_mb as usize).clamp(1, 512) * 1024 * 1024;
+    }
+    if let Some(ext) = format_hint {
+        if matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "dsf" | "dff" | "wv" | "dsd"
+        ) {
+            return 32 * 1024 * 1024;
+        }
+    }
+    STREAM_BUFFER_CAPACITY
 }
 
-/// Reset stream telemetry (called when starting a new stream or receiving `STMf` flush).
-pub fn reset_stream_telemetry() {
-    let cell = STREAM_TELEMETRY.get_or_init(|| Mutex::new(StreamTelemetry::default()));
-    *cell.lock() = StreamTelemetry::default();
+/// Dynamically scale the active stream's pre-buffer capacity for `~8s` of audio at `bytes_per_sec`
+/// when `stream_buffer_mb` is set to `0` (auto). Clamped to `[8 MiB, 64 MiB]`.
+pub fn update_auto_stream_buffer_bitrate(bytes_per_sec: u64) {
+    if get_configured_stream_buffer_mb() > 0 || bytes_per_sec == 0 {
+        return;
+    }
+    let target = (bytes_per_sec.saturating_mul(AUTO_TARGET_BUFFER_SECONDS) as usize)
+        .clamp(MIN_AUTO_STREAM_BUFFER_CAPACITY, MAX_AUTO_STREAM_BUFFER_CAPACITY);
+    if let Some(cell) = ACTIVE_STREAM_CAPACITY.get() {
+        if let Some(cap) = cell.lock().as_ref() {
+            cap.store(target, Ordering::Relaxed);
+        }
+    }
 }
 
 fn update_global_telemetry(total: u64, occupancy: u32, capacity: u32) {
-    let cell = STREAM_TELEMETRY.get_or_init(|| Mutex::new(StreamTelemetry::default()));
-    let mut lock = cell.lock();
-    lock.total_bytes_read = total;
-    lock.buffer_occupancy = occupancy;
-    lock.buffer_capacity = capacity;
+    update_stream_telemetry(total, occupancy, capacity);
 }
 
 /// Internal state shared between background producer thread and consumer `Read` calls.
@@ -70,11 +94,20 @@ pub struct PrebufferedStreamReader {
     state: Arc<Mutex<PrebufferState>>,
     condvar: Arc<Condvar>,
     stop_flag: Arc<AtomicBool>,
+    capacity: Arc<AtomicUsize>,
 }
 
 impl PrebufferedStreamReader {
-    pub fn new(mut reader: Box<dyn Read + Send>) -> Self {
+    pub fn new(reader: Box<dyn Read + Send>) -> Self {
+        Self::with_capacity(reader, resolve_stream_buffer_capacity(None))
+    }
+
+    pub fn with_capacity(mut reader: Box<dyn Read + Send>, initial_capacity: usize) -> Self {
         reset_stream_telemetry();
+
+        let initial_cap = initial_capacity.max(INITIAL_PREBUFFER_BYTES * 2);
+        let capacity = Arc::new(AtomicUsize::new(initial_cap));
+        register_active_capacity(&capacity);
 
         let state = Arc::new(Mutex::new(PrebufferState {
             buffer: VecDeque::with_capacity(INITIAL_PREBUFFER_BYTES * 2),
@@ -89,6 +122,7 @@ impl PrebufferedStreamReader {
         let state_clone = Arc::clone(&state);
         let condvar_clone = Arc::clone(&condvar);
         let stop_clone = Arc::clone(&stop_flag);
+        let capacity_clone = Arc::clone(&capacity);
 
         let _ = thread::Builder::new()
             .name("kiiaud-stream-buf".to_owned())
@@ -107,14 +141,14 @@ impl PrebufferedStreamReader {
                             update_global_telemetry(
                                 st.total_bytes_read,
                                 st.buffer.len() as u32,
-                                STREAM_BUFFER_CAPACITY as u32,
+                                capacity_clone.load(Ordering::Relaxed) as u32,
                             );
                             condvar_clone.notify_all();
                             break;
                         }
                         Ok(n) => {
                             let mut st = state_clone.lock();
-                            while st.buffer.len() + n > STREAM_BUFFER_CAPACITY
+                            while st.buffer.len() + n > capacity_clone.load(Ordering::Relaxed)
                                 && !stop_clone.load(Ordering::Relaxed)
                             {
                                 condvar_clone.wait_for(&mut st, Duration::from_millis(50));
@@ -132,7 +166,7 @@ impl PrebufferedStreamReader {
                             update_global_telemetry(
                                 st.total_bytes_read,
                                 st.buffer.len() as u32,
-                                STREAM_BUFFER_CAPACITY as u32,
+                                capacity_clone.load(Ordering::Relaxed) as u32,
                             );
                             condvar_clone.notify_all();
                         }
@@ -155,6 +189,7 @@ impl PrebufferedStreamReader {
             state,
             condvar,
             stop_flag,
+            capacity,
         }
     }
 }
@@ -198,7 +233,7 @@ impl Read for PrebufferedStreamReader {
             update_global_telemetry(
                 st.total_bytes_read,
                 st.buffer.len() as u32,
-                STREAM_BUFFER_CAPACITY as u32,
+                self.capacity.load(Ordering::Relaxed) as u32,
             );
             self.condvar.notify_all();
             return Ok(to_read);
@@ -397,8 +432,9 @@ pub fn open_http_stream(
         Box::new(resp)
     };
 
+    let buf_capacity = resolve_stream_buffer_capacity(ext_hint.as_deref());
     let prebuffered_reader: Box<dyn Read + Send> =
-        Box::new(PrebufferedStreamReader::new(base_reader));
+        Box::new(PrebufferedStreamReader::with_capacity(base_reader, buf_capacity));
 
     Ok((
         Box::new(StreamMediaSource::new(prebuffered_reader, content_len)),
@@ -430,8 +466,9 @@ pub fn open_tcp_stream(
         }
     }
 
+    let buf_capacity = resolve_stream_buffer_capacity(format_hint.as_deref());
     let prebuffered_reader: Box<dyn Read + Send> =
-        Box::new(PrebufferedStreamReader::new(Box::new(stream)));
+        Box::new(PrebufferedStreamReader::with_capacity(Box::new(stream), buf_capacity));
 
     Ok((
         Box::new(StreamMediaSource::new(prebuffered_reader, None)),
@@ -548,5 +585,16 @@ mod tests {
         let telemetry = get_stream_telemetry();
         assert_eq!(telemetry.total_bytes_read, 0);
         assert_eq!(telemetry.buffer_occupancy, 0);
+    }
+
+    #[test]
+    fn test_resolve_stream_buffer_capacity_auto_and_override() {
+        kiiaud_core::telemetry::set_configured_stream_buffer_mb(0);
+        assert_eq!(resolve_stream_buffer_capacity(Some("flac")), 8 * 1024 * 1024);
+        assert_eq!(resolve_stream_buffer_capacity(Some("dsf")), 32 * 1024 * 1024);
+
+        kiiaud_core::telemetry::set_configured_stream_buffer_mb(24);
+        assert_eq!(resolve_stream_buffer_capacity(Some("flac")), 24 * 1024 * 1024);
+        kiiaud_core::telemetry::set_configured_stream_buffer_mb(0);
     }
 }

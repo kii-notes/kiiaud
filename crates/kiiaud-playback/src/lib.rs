@@ -121,6 +121,7 @@ pub struct PlaybackEngine {
 impl PlaybackEngine {
     /// Create a new `PlaybackEngine` using the configured output backend (`"alsa"` or `"mock"`).
     pub fn new(config: &KiiaudConfig) -> Self {
+        kiiaud_core::telemetry::set_configured_stream_buffer_mb(config.output.stream_buffer_mb);
         let output: Box<dyn AudioOutput> = if config.output.backend.eq_ignore_ascii_case("mock")
             || config.output.backend.eq_ignore_ascii_case("null")
         {
@@ -921,7 +922,25 @@ fn handle_worker_cmd(
             *prebuffered_next = None;
 
             match SymphoniaAudioDecoder::open_source(&item.source, policy) {
-                Ok(dec) => match output.open(&dec.format()) {
+                Ok(dec) => {
+                    let src_fmt = dec.format();
+                    let bytes_per_sec = match src_fmt {
+                        AudioFormat::Pcm {
+                            sample_rate,
+                            channels,
+                            sample_format,
+                            ..
+                        } => {
+                            sample_rate as u64
+                                * channels as u64
+                                * sample_format.bytes_per_sample() as u64
+                        }
+                        AudioFormat::Dsd { rate, channels, .. } => {
+                            rate.byte_rate_hz() as u64 * channels as u64
+                        }
+                    };
+                    kiiaud_decoder::stream::update_auto_stream_buffer_bitrate(bytes_per_sec);
+                    match output.open(&src_fmt) {
                     Ok(neg_fmt) => {
                         *output_is_open = true;
                         let duration = dec.duration();
@@ -943,7 +962,8 @@ fn handle_worker_cmd(
                             error: err,
                         });
                     }
-                },
+                }
+                }
                 Err(err) => {
                     *current_decoder = None;
                     *output_is_open = false;

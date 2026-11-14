@@ -11,6 +11,34 @@
 #[cfg(windows)]
 use parking_lot::Mutex;
 
+/// Attach to the parent process's console on Windows when running under `windows_subsystem = "windows"`.
+#[cfg(windows)]
+pub fn attach_parent_console() {
+    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+/// No-op on non-Windows platforms.
+#[cfg(not(windows))]
+pub fn attach_parent_console() {}
+
+/// Toggle the console window visibility on Windows (allocating one if none is attached).
+#[cfg(windows)]
+unsafe fn toggle_console_window() {
+    use windows::Win32::System::Console::{AllocConsole, GetConsoleWindow};
+    use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, SW_HIDE, SW_SHOW, ShowWindow};
+    let con = GetConsoleWindow();
+    if con.is_invalid() {
+        let _ = AllocConsole();
+    } else if IsWindowVisible(con).as_bool() {
+        let _ = ShowWindow(con, SW_HIDE);
+    } else {
+        let _ = ShowWindow(con, SW_SHOW);
+    }
+}
+
 /// Hide the active console terminal window on Windows.
 #[cfg(windows)]
 pub fn hide_console_window() {
@@ -118,13 +146,12 @@ unsafe extern "system" fn tray_wnd_proc(
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::{LRESULT, POINT, RECT};
-    use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::UI::Shell::{NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW};
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, DefWindowProcW, DestroyMenu, DestroyWindow, GetCursorPos,
-        IsWindowVisible, MF_GRAYED, MF_SEPARATOR, MF_STRING, PostQuitMessage, SW_HIDE, SW_SHOW,
-        SetForegroundWindow, ShowWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
-        WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+        MF_GRAYED, MF_SEPARATOR, MF_STRING, PostQuitMessage, SetForegroundWindow,
+        TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY,
+        WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
     };
     use windows::core::PCWSTR;
 
@@ -207,14 +234,7 @@ unsafe extern "system" fn tray_wnd_proc(
                     if let Some(ref url) = web_url {
                         open_browser(url);
                     } else {
-                        let con = GetConsoleWindow();
-                        if !con.is_invalid() {
-                            if IsWindowVisible(con).as_bool() {
-                                let _ = ShowWindow(con, SW_HIDE);
-                            } else {
-                                let _ = ShowWindow(con, SW_SHOW);
-                            }
-                        }
+                        toggle_console_window();
                     }
                 }
                 LRESULT(0)
@@ -230,14 +250,7 @@ unsafe extern "system" fn tray_wnd_proc(
                         }
                     }
                     IDM_TOGGLE_CONSOLE => {
-                        let con = GetConsoleWindow();
-                        if !con.is_invalid() {
-                            if IsWindowVisible(con).as_bool() {
-                                let _ = ShowWindow(con, SW_HIDE);
-                            } else {
-                                let _ = ShowWindow(con, SW_SHOW);
-                            }
-                        }
+                        toggle_console_window();
                     }
                     IDM_EXIT => {
                         if let Some(ctx) = TRAY_STATE.lock().as_ref() {

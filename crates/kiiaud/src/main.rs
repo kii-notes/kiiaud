@@ -5,6 +5,8 @@
 //! Coordinates the playback engine (`kiiaud-playback`), ALSA hardware-direct output (`kiiaud-output-alsa`),
 //! and modular protocol adapters (`kiiaud-adapter-cli`, `kiiaud-adapter-mpd`, `kiiaud-adapter-jellyfin`, `kiiaud-adapter-lms`).
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use clap::Parser;
 use kiiaud_adapter_cli::run_ipc_server;
 use kiiaud_adapter_jellyfin::run_jellyfin_adapter;
@@ -467,6 +469,12 @@ impl Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // On Windows (`windows_subsystem = "windows"`), attach to the parent terminal
+    // when invoked interactively (e.g. `--help`, `--service status`, CLI) unless `--background` is set.
+    if !std::env::args_os().any(|a| a == "--background") {
+        tray::attach_parent_console();
+    }
+
     let args = Args::parse();
 
     // Handle background service management actions (--service, --service-install, etc.)

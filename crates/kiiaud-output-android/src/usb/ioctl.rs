@@ -167,6 +167,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn test_ioctl_values_match_linux_headers() {
         assert_eq!(USBDEVFS_CONTROL, 0xc0185500);
         assert_eq!(USBDEVFS_SETINTERFACE, 0x80085504);

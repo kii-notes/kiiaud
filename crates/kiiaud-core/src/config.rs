@@ -525,10 +525,12 @@ pub struct OutputConfig {
     pub bit_perfect: bool,
     /// DSD transport mode (`"auto"`, `"native"`, or `"dop"`).
     pub dsd_mode: DsdMode,
-    /// Buffer time in milliseconds (default 200ms).
+    /// Buffer time in milliseconds (default 200ms on desktop, 600ms on ARM SBCs).
     pub buffer_time_ms: u32,
-    /// Period time in milliseconds (default 40ms).
+    /// Period time in milliseconds (default 40ms on desktop, 100ms on ARM SBCs).
     pub period_time_ms: u32,
+    /// HTTP/stream pre-buffer capacity in MiB (`0` = auto-scale by bitrate, clamped 8..64 MiB).
+    pub stream_buffer_mb: u32,
     /// Optional hardware mixer control name (e.g. `"PCM"` or `"Master"`). `None` disables volume changes.
     pub hardware_mixer: Option<String>,
 }
@@ -542,13 +544,19 @@ impl Default for OutputConfig {
         #[cfg(all(not(target_os = "windows"), not(target_os = "android")))]
         let (default_backend, default_dev) = ("alsa", "hw:CARD=Audio,DEV=0");
 
+        #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+        let (default_buffer_ms, default_period_ms) = (600, 100);
+        #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+        let (default_buffer_ms, default_period_ms) = (200, 40);
+
         Self {
             backend: default_backend.to_owned(),
             device: default_dev.to_owned(),
             bit_perfect: true,
             dsd_mode: DsdMode::Auto,
-            buffer_time_ms: 200,
-            period_time_ms: 40,
+            buffer_time_ms: default_buffer_ms,
+            period_time_ms: default_period_ms,
+            stream_buffer_mb: 0,
             hardware_mixer: None,
         }
     }

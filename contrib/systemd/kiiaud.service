@@ -19,6 +19,9 @@ Restart=on-failure
 RestartSec=3
 
 # Real-time audio priority and memory locking for glitch-free playback
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+Nice=-15
 LimitRTPRIO=95
 LimitMEMLOCK=infinity
 

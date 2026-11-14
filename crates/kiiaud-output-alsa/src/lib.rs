@@ -303,7 +303,13 @@ impl AlsaAudioOutput {
     }
 
     /// Write raw interleaved bytes to ALSA `io_bytes()`, recovering from underruns (`EPIPE` / `ESTRPIPE`).
-    fn write_raw_bytes(&self, pcm: &PCM, bytes: &[u8], bytes_per_frame: usize) -> Result<usize> {
+    /// Returns `(errno_if_unrecoverable, KiiaudError)` on failure so callers can detect `ENODEV (19)`.
+    fn write_raw_bytes(
+        &self,
+        pcm: &PCM,
+        bytes: &[u8],
+        bytes_per_frame: usize,
+    ) -> std::result::Result<usize, (Option<i32>, KiiaudError)> {
         if bytes.is_empty() || bytes_per_frame == 0 {
             return Ok(0);
         }
@@ -320,16 +326,24 @@ impl AlsaAudioOutput {
                     offset += frames_written * bytes_per_frame;
                 }
                 Err(err) => {
+                    let errno = err.errno();
+                    let tel = kiiaud_core::telemetry::get_stream_telemetry();
                     tracing::warn!(
                         device = %self.config.device,
-                        errno = err.errno(),
+                        errno,
+                        stream_buffer_bytes = tel.buffer_occupancy,
+                        stream_buffer_capacity = tel.buffer_capacity,
+                        stream_buffer_pct = %format!("{:.1}%", tel.fill_percent()),
                         "ALSA write xrun/interruption; attempting snd_pcm_recover"
                     );
                     pcm.try_recover(err, false).map_err(|e| {
-                        KiiaudError::Output(format!(
-                            "ALSA unrecoverable write error on '{}': {e}",
-                            self.config.device
-                        ))
+                        (
+                            Some(errno),
+                            KiiaudError::Output(format!(
+                                "ALSA unrecoverable write error on '{}': {e}",
+                                self.config.device
+                            )),
+                        )
                     })?;
                 }
             }
@@ -554,7 +568,47 @@ impl AudioOutput for AlsaAudioOutput {
             return Err(KiiaudError::Output("ALSA PCM handle missing".to_owned()));
         };
 
-        self.write_raw_bytes(pcm, &self.byte_scratch, bytes_per_frame)
+        match self.write_raw_bytes(pcm, &self.byte_scratch, bytes_per_frame) {
+            Ok(frames) => Ok(frames),
+            Err((Some(19), err)) => {
+                // E2: ENODEV (19 / "No such device") — clear stale handle and retry re-open 3 times with backoff.
+                tracing::warn!(
+                    device = %self.config.device,
+                    "ALSA device disconnected (ENODEV 19); attempting automatic re-open (E2)"
+                );
+                self.pcm = None;
+                self.hw_format = None;
+
+                if let Some(req_fmt) = self.active_format {
+                    for attempt in 1..=3u64 {
+                        std::thread::sleep(std::time::Duration::from_millis(attempt * 500));
+                        tracing::info!(
+                            device = %self.config.device,
+                            attempt,
+                            "Retrying ALSA device re-open after ENODEV"
+                        );
+                        if self.open(&req_fmt).is_ok() {
+                            if let Some(new_pcm) = self.pcm.as_ref() {
+                                if let Ok(frames) =
+                                    self.write_raw_bytes(new_pcm, &self.byte_scratch, bytes_per_frame)
+                                {
+                                    tracing::info!(
+                                        device = %self.config.device,
+                                        attempt,
+                                        "ALSA device re-opened and recovered after ENODEV"
+                                    );
+                                    return Ok(frames);
+                                }
+                            }
+                            self.pcm = None;
+                            self.hw_format = None;
+                        }
+                    }
+                }
+                Err(err)
+            }
+            Err((_, err)) => Err(err),
+        }
     }
 
     fn pause(&mut self) -> Result<()> {

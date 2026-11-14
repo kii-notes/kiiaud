@@ -235,6 +235,10 @@ Type=simple
 ExecStart={}
 Restart=on-failure
 RestartSec=3
+# Uncomment the 3 lines below if your user session has CAP_SYS_NICE / rtprio permissions:
+# CPUSchedulingPolicy=fifo
+# CPUSchedulingPriority=50
+# Nice=-15
 LimitRTPRIO=95
 LimitMEMLOCK=infinity
 

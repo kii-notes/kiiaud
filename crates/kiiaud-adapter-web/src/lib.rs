@@ -435,6 +435,9 @@ async fn handle_http_connection(mut stream: TcpStream, ctx: WebServerContext) ->
                 *ctx.config.write() = new_cfg.clone();
                 // Trigger live hot-reload of LMS (LAN) and LAG (Gateway) adapters without daemon restart!
                 reload_lms_adapter(new_cfg.adapter.lms.clone());
+                kiiaud_core::telemetry::set_configured_stream_buffer_mb(
+                    new_cfg.output.stream_buffer_mb,
+                );
                 reload_lag_adapter(new_cfg.adapter.lag.clone());
 
                 let msg = if let Some(ref p) = ctx.config_path {
