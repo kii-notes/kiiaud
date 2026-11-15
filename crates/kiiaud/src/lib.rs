@@ -245,37 +245,4 @@ mod android_jni {
     ) -> jboolean {
         DAEMON_RUNNING.load(Ordering::SeqCst)
     }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn Java_org_kiiaud_KiiaudNative_setUsbDeviceFd(
-        _env: EnvUnowned<'_>,
-        _class: JClass<'_>,
-        fd: jint,
-    ) {
-        kiiaud_output_android::set_active_usb_fd(fd);
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn Java_org_kiiaud_KiiaudNative_clearUsbDevice(
-        _env: EnvUnowned<'_>,
-        _class: JClass<'_>,
-    ) {
-        kiiaud_output_android::clear_active_usb_fd();
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn Java_org_kiiaud_KiiaudNative_getActiveUsbFd(
-        _env: EnvUnowned<'_>,
-        _class: JClass<'_>,
-    ) -> jint {
-        kiiaud_output_android::get_active_usb_fd().unwrap_or(-1)
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn Java_org_kiiaud_KiiaudNative_isUsbDacActive(
-        _env: EnvUnowned<'_>,
-        _class: JClass<'_>,
-    ) -> jboolean {
-        kiiaud_output_android::get_active_usb_fd().is_some()
-    }
 }
