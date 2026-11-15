@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Match any USB Audio Class (class 1) device -->
+    <usb-device class="1" />
+</resources>

@@ -74,7 +74,10 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
+                    android:background="@drawable/tv_button_bg"
+                    android:focusable="true"
                     android:text="OPEN WEB DASHBOARD"
+                    android:textColor="#F8FAFC"
                     android:textSize="12sp"
                     android:layout_marginEnd="6dp" />
 
@@ -83,7 +86,41 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
+                    android:background="@drawable/tv_button_bg"
+                    android:focusable="true"
                     android:text="STOP SERVICE"
+                    android:textColor="#F8FAFC"
+                    android:textSize="12sp"
+                    android:layout_marginStart="6dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="10dp">
+
+                <Button
+                    android:id="@+id/btnBackendMode"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/tv_button_bg"
+                    android:focusable="true"
+                    android:text="BACKEND: AUTO"
+                    android:textColor="#38BDF8"
+                    android:textSize="12sp"
+                    android:layout_marginEnd="6dp" />
+
+                <Button
+                    android:id="@+id/btnImportConfig"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/tv_button_bg"
+                    android:focusable="true"
+                    android:text="IMPORT CONFIG"
+                    android:textColor="#F8FAFC"
                     android:textSize="12sp"
                     android:layout_marginStart="6dp" />
             </LinearLayout>
@@ -110,7 +147,12 @@
                 android:id="@+id/btnScanDacs"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:background="@drawable/tv_button_bg"
+                android:focusable="true"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
                 android:text="SCAN"
+                android:textColor="#F8FAFC"
                 android:textSize="12sp" />
         </LinearLayout>
 

@@ -6,12 +6,13 @@ import android.content.Intent
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Bundle
-import android.text.format.Formatter
+import android.os.Environment
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import java.io.File
 import java.net.NetworkInterface
 import java.util.Collections
 
@@ -23,7 +24,11 @@ class MainActivity : Activity() {
     private lateinit var btnToggleService: Button
     private lateinit var btnScanDacs: Button
     private lateinit var btnOpenWebUi: Button
+    private lateinit var btnBackendMode: Button
+    private lateinit var btnImportConfig: Button
     private lateinit var layoutDacList: LinearLayout
+
+    private val backendModes = listOf("auto", "android", "android-usb")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,6 +41,8 @@ class MainActivity : Activity() {
         btnToggleService = findViewById(R.id.btnToggleService)
         btnScanDacs = findViewById(R.id.btnScanDacs)
         btnOpenWebUi = findViewById(R.id.btnOpenWebUi)
+        btnBackendMode = findViewById(R.id.btnBackendMode)
+        btnImportConfig = findViewById(R.id.btnImportConfig)
         layoutDacList = findViewById(R.id.layoutDacList)
 
         btnToggleService.setOnClickListener {
@@ -50,6 +57,14 @@ class MainActivity : Activity() {
             val ip = getDeviceIpAddress()
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("http://$ip:7110"))
             startActivity(intent)
+        }
+
+        btnBackendMode.setOnClickListener {
+            cycleBackendMode()
+        }
+
+        btnImportConfig.setOnClickListener {
+            importConfigFromDownloads()
         }
 
         // Auto-start Service if not running
@@ -87,10 +102,60 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun cycleBackendMode() {
+        val current = KiiaudService.getSelectedBackend(this)
+        val idx = backendModes.indexOf(current).let { if (it < 0) 0 else it }
+        val next = backendModes[(idx + 1) % backendModes.size]
+        KiiaudService.setSelectedBackend(this, next)
+        if (KiiaudService.isServiceRunning) {
+            stopKiiaudService()
+            startKiiaudService()
+        }
+        updateUiState()
+        Toast.makeText(this, "Audio backend set to: $next", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun importConfigFromDownloads() {
+        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val candidates = listOf(
+            File(downloads, "kiiaud.toml"),
+            File(downloads, "config.toml"),
+            File("/sdcard/Download/kiiaud.toml"),
+            File("/data/local/tmp/kiiaud/config.toml")
+        )
+        val source = candidates.firstOrNull { it.isFile && it.canRead() }
+        if (source == null) {
+            Toast.makeText(
+                this,
+                "Place kiiaud.toml in /sdcard/Download/ and tap IMPORT CONFIG again",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        try {
+            val dest = KiiaudService.getConfigFile(this)
+            source.copyTo(dest, overwrite = true)
+            if (KiiaudService.isServiceRunning) {
+                stopKiiaudService()
+                startKiiaudService()
+            }
+            Toast.makeText(this, "Imported ${source.name} -> restarted engine", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun updateUiState() {
         val isRunning = KiiaudService.isServiceRunning
         tvStatus.text = if (isRunning) "● RUNNING (Port 7110)" else "○ STOPPED"
         btnToggleService.text = if (isRunning) "STOP SERVICE" else "START SERVICE"
+
+        val backend = KiiaudService.getSelectedBackend(this)
+        btnBackendMode.text = when (backend) {
+            "android" -> "BACKEND: AAUDIO"
+            "android-usb" -> "BACKEND: DIRECT USB"
+            else -> "BACKEND: AUTO (USB/AAUDIO)"
+        }
 
         val ip = getDeviceIpAddress()
         tvIpAddress.text = "http://$ip:7110"
@@ -135,6 +200,9 @@ class MainActivity : Activity() {
             val selectBtn = Button(this).apply {
                 text = if (dac.isConnected) "ACTIVE DAC" else "SELECT THIS DAC"
                 isEnabled = !dac.isConnected
+                isFocusable = true
+                setBackgroundResource(R.drawable.tv_button_bg)
+                setTextColor(0xFFF8FAFC.toInt())
                 setOnClickListener {
                     usbDacManager.requestPermission(dac.device) { granted ->
                         if (granted) {

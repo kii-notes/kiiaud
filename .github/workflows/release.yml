@@ -39,6 +39,7 @@ jobs:
           files: |
             packages/*.tar.gz
             packages/*.zip
+            packages/*.apk
             packages/*.sha256
           generate_release_notes: true
           draft: false

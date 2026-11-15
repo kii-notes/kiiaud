@@ -362,6 +362,7 @@ pub fn open_http_stream(
     headers: &HashMap<String, String>,
 ) -> Result<(Box<dyn MediaSource>, Option<String>)> {
     let client = reqwest::blocking::Client::builder()
+        .tls_backend_preconfigured(kiiaud_core::tls::webpki_rustls_config())
         .connect_timeout(Duration::from_secs(10))
         .user_agent("kiiaud/0.1")
         .build()

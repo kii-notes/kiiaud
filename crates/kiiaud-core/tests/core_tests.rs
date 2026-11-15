@@ -273,7 +273,7 @@ fn test_default_config_template_is_valid() {
     assert_eq!(cfg.output.backend, "alsa");
     assert!(cfg.output.bit_perfect);
     assert!(cfg.adapter.web.enabled);
-    assert!(cfg.adapter.mpd.enabled);
+    assert!(!cfg.adapter.mpd.enabled);
     assert!(!cfg.adapter.jellyfin.enabled);
 }
 

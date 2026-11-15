@@ -22,11 +22,14 @@
         android:label="kiiaud"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:usesCleartextTraffic="true">
 
-        <!-- Single Page Control UI -->
+        <!-- Single Page Control UI (Mobile + Android TV / Google TV) -->
         <activity
             android:name=".MainActivity"
+            android:banner="@drawable/tv_banner"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>
@@ -39,6 +42,9 @@
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
         </activity>
 
         <!-- 24/7 Headless Audio Foreground Service -->

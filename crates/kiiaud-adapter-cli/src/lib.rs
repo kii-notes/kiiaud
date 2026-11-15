@@ -74,22 +74,105 @@ pub enum IpcResponse {
     },
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn abstract_socket_name(path: &Path) -> Option<&[u8]> {
+    let raw = path.to_str()?;
+    raw.strip_prefix('@')
+        .or_else(|| raw.strip_prefix('\0'))
+        .map(str::as_bytes)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn bind_abstract_listener(name: &[u8]) -> std::io::Result<UnixListener> {
+    #[cfg(target_os = "linux")]
+    use std::os::linux::net::SocketAddrExt;
+    #[cfg(target_os = "android")]
+    use std::os::android::net::SocketAddrExt;
+
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(name)?;
+    let std_listener = std::os::unix::net::UnixListener::bind_addr(&addr)?;
+    std_listener.set_nonblocking(true)?;
+    UnixListener::from_std(std_listener)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn connect_abstract_stream(name: &[u8]) -> std::io::Result<UnixStream> {
+    #[cfg(target_os = "linux")]
+    use std::os::linux::net::SocketAddrExt;
+    #[cfg(target_os = "android")]
+    use std::os::android::net::SocketAddrExt;
+
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(name)?;
+    let std_stream = std::os::unix::net::UnixStream::connect_addr(&addr)?;
+    std_stream.set_nonblocking(true)?;
+    UnixStream::from_std(std_stream)
+}
+
 /// Start the local IPC server as an independent background task (`R-021`).
 #[cfg(unix)]
 pub async fn run_ipc_server(socket_path: PathBuf, engine: EngineHandle) -> Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if socket_path.exists() {
-        let _ = std::fs::remove_file(&socket_path);
-    }
+    let listener = {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if let Some(abs_name) = abstract_socket_name(&socket_path) {
+            bind_abstract_listener(abs_name).map_err(|e| {
+                KiiaudError::Io(format!(
+                    "Failed to bind abstract IPC socket '{}': {e}",
+                    socket_path.display()
+                ))
+            })?
+        } else {
+            if let Some(parent) = socket_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if socket_path.exists() {
+                let _ = std::fs::remove_file(&socket_path);
+            }
+            match UnixListener::bind(&socket_path) {
+                Ok(l) => l,
+                Err(e)
+                    if cfg!(target_os = "android")
+                        && (e.kind() == std::io::ErrorKind::PermissionDenied
+                            || e.raw_os_error() == Some(13)) =>
+                {
+                    tracing::warn!(
+                        socket = %socket_path.display(),
+                        "SELinux/permissions blocked filesystem IPC socket ({e}); falling back to abstract socket '@kiiaud.sock'"
+                    );
+                    match bind_abstract_listener(b"kiiaud.sock") {
+                        Ok(l) => l,
+                        Err(abs_err) => {
+                            tracing::warn!(
+                                "local CLI IPC server disabled on Android: {abs_err}"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(KiiaudError::Io(format!(
+                        "Failed to bind IPC socket '{}': {e}",
+                        socket_path.display()
+                    )));
+                }
+            }
+        }
 
-    let listener = UnixListener::bind(&socket_path).map_err(|e| {
-        KiiaudError::Io(format!(
-            "Failed to bind IPC socket '{}': {e}",
-            socket_path.display()
-        ))
-    })?;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            if let Some(parent) = socket_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if socket_path.exists() {
+                let _ = std::fs::remove_file(&socket_path);
+            }
+            UnixListener::bind(&socket_path).map_err(|e| {
+                KiiaudError::Io(format!(
+                    "Failed to bind IPC socket '{}': {e}",
+                    socket_path.display()
+                ))
+            })?
+        }
+    };
 
     tracing::info!(socket = %socket_path.display(), "local CLI IPC server listening (unix domain socket)");
 
@@ -276,12 +359,32 @@ async fn process_ipc_request(req: IpcRequest, engine: &EngineHandle) -> IpcRespo
 /// Send a single [`IpcRequest`] to a running `kiiaud` daemon and await its [`IpcResponse`].
 #[cfg(unix)]
 pub async fn send_ipc_request(socket_path: &Path, req: &IpcRequest) -> Result<IpcResponse> {
-    let stream = UnixStream::connect(socket_path).await.map_err(|e| {
-        KiiaudError::Io(format!(
-            "Failed to connect to kiiaud socket '{}': {e}",
-            socket_path.display()
-        ))
-    })?;
+    let stream = {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if let Some(abs_name) = abstract_socket_name(socket_path) {
+            connect_abstract_stream(abs_name).map_err(|e| {
+                KiiaudError::Io(format!(
+                    "Failed to connect to kiiaud abstract socket '{}': {e}",
+                    socket_path.display()
+                ))
+            })?
+        } else {
+            UnixStream::connect(socket_path).await.map_err(|e| {
+                KiiaudError::Io(format!(
+                    "Failed to connect to kiiaud socket '{}': {e}",
+                    socket_path.display()
+                ))
+            })?
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        UnixStream::connect(socket_path).await.map_err(|e| {
+            KiiaudError::Io(format!(
+                "Failed to connect to kiiaud socket '{}': {e}",
+                socket_path.display()
+            ))
+        })?
+    };
 
     let (reader, mut writer) = stream.into_split();
     let mut payload =

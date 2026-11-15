@@ -83,7 +83,7 @@ listen = "0.0.0.0:7110"
 [adapter.mpd]
 # Music Player Daemon (MPD) protocol emulation server.
 # Allows controlling kiiaud from any standard MPD client (ncmpcpp, Cantata, MAFA, etc.).
-enabled = true
+enabled = false
 listen = "0.0.0.0:6600"
 
 [adapter.jellyfin]
@@ -109,7 +109,9 @@ enabled = false
 server_host = "192.168.1.100"
 server_port = 3483
 http_port = 9000
-player_name = "kiiaud Squeezebox"
+player_name = "kiiaud (LAN)"
+dsd_support = false
+max_sample_rate = 192000
 mac_address = [2, 75, 73, 73, 65, 85]
 
 [adapter.lag]
@@ -118,8 +120,11 @@ mac_address = [2, 75, 73, 73, 65, 85]
 enabled = false
 gateway_url = "https://music.example.com"
 gateway_quality = "original" # "original" (bit-perfect passthrough), "high" (Opus 160k), or "low" (Opus 96k)
-player_name = "kiiaud Squeezebox"
+player_name = "kiiaud (LAG)"
+dsd_support = false
+max_sample_rate = 192000
 # gateway_username = ""
+# gateway_password = ""
 # gateway_refresh_token = ""
 # gateway_device_name = ""
 "#;
@@ -230,12 +235,23 @@ impl KiiaudConfig {
                     return Some(PathBuf::from(xdg).join("kiiaud").join("config.toml"));
                 }
             }
-            std::env::var("HOME").ok().map(|home| {
-                PathBuf::from(home)
-                    .join(".config")
-                    .join("kiiaud")
-                    .join("config.toml")
-            })
+            let home = std::env::var("HOME").ok().filter(|h| {
+                !h.is_empty() && !(cfg!(target_os = "android") && h == "/")
+            });
+            if let Some(home) = home {
+                return Some(
+                    PathBuf::from(home)
+                        .join(".config")
+                        .join("kiiaud")
+                        .join("config.toml"),
+                );
+            }
+            #[cfg(target_os = "android")]
+            {
+                return Some(PathBuf::from("/data/local/tmp/kiiaud/config.toml"));
+            }
+            #[cfg(not(target_os = "android"))]
+            None
         }
     }
 
@@ -429,12 +445,7 @@ impl KiiaudConfig {
             })?;
         }
 
-        std::fs::write(path, DEFAULT_CONFIG_TEMPLATE).map_err(|e| {
-            KiiaudError::Config(format!(
-                "Failed to write default config to '{}': {e}",
-                path.display()
-            ))
-        })?;
+        Self::default().save_to_file(path)?;
 
         // Secure file permissions on Unix: only owner read/write (0600)
         #[cfg(unix)]
@@ -488,6 +499,16 @@ impl KiiaudConfig {
     }
 
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    KiiaudError::Config(format!(
+                        "Failed to create config directory '{}': {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+        }
         let body = self.to_toml_string()?;
         let content =
             format!("# kiiaud — Bit-Perfect Network Audio Playback Daemon Configuration\n\n{body}");
@@ -507,9 +528,14 @@ pub struct DaemonConfig {
 
 impl Default for DaemonConfig {
     fn default() -> Self {
+        let socket_path = if cfg!(target_os = "android") {
+            PathBuf::from("@kiiaud.sock")
+        } else {
+            PathBuf::from("/tmp/kiiaud.sock")
+        };
         Self {
-            name: "kiiaud-rpi5".to_owned(),
-            socket_path: PathBuf::from("/tmp/kiiaud.sock"),
+            name: "kiiaud-endpoint".to_owned(),
+            socket_path,
             log_level: "info".to_owned(),
         }
     }
@@ -541,7 +567,7 @@ impl Default for OutputConfig {
         #[cfg(target_os = "windows")]
         let (default_backend, default_dev) = ("wasapi", "default");
         #[cfg(target_os = "android")]
-        let (default_backend, default_dev) = ("oboe", "default");
+        let (default_backend, default_dev) = ("android", "default");
         #[cfg(all(not(target_os = "windows"), not(target_os = "android")))]
         let (default_backend, default_dev) = ("alsa", "hw:CARD=Audio,DEV=0");
 
@@ -606,7 +632,7 @@ pub struct MpdAdapterConfig {
 impl Default for MpdAdapterConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             listen: "0.0.0.0:6600".to_owned(),
             music_directory: None,
         }

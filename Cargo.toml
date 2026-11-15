@@ -49,6 +49,8 @@ symphonia = { git = "https://github.com/M0Rf30/Symphonia", rev = "85aa8493557441
 
 # Networking
 reqwest = { version = "0.13", features = ["stream", "blocking", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+webpki-roots = "1.0"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 

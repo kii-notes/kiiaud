@@ -240,6 +240,7 @@ pub async fn gateway_login(
     let url = format!("{base}/v1/auth/login");
 
     let client = reqwest::Client::builder()
+        .tls_backend_preconfigured(kiiaud_core::tls::webpki_rustls_config())
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
@@ -319,6 +320,7 @@ pub async fn gateway_pair(
     let url = format!("{base}/v1/auth/pair");
 
     let client = reqwest::Client::builder()
+        .tls_backend_preconfigured(kiiaud_core::tls::webpki_rustls_config())
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
@@ -382,6 +384,7 @@ pub async fn gateway_refresh_token(
     let url = format!("{base}/v1/auth/refresh");
 
     let client = reqwest::Client::builder()
+        .tls_backend_preconfigured(kiiaud_core::tls::webpki_rustls_config())
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;

@@ -12,6 +12,7 @@ pub mod queue;
 pub mod security;
 pub mod state;
 pub mod telemetry;
+pub mod tls;
 
 pub use config::{KiiaudConfig, parse_mac_address};
 pub use error::{KiiaudError, Result};
