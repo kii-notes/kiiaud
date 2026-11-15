@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Background -->
+    <path
+        android:fillColor="#090D16"
+        android:pathData="M0,0h320v180h-320z" />
+
+    <!-- Subtle Card Frame -->
+    <path
+        android:fillColor="#131B2E"
+        android:pathData="M16,16h288c4.42,0 8,3.58 8,8v132c0,4.42 -3.58,8 -8,8h-288c-4.42,0 -8,-3.58 -8,-8v-132c0,-4.42 3.58,-8 8,-8z" />
+
+    <!-- Accent Audio Wave / Bars (left) -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M48,74h8v32h-8zM64,58h8v64h-8zM80,46h8v88h-8zM96,64h8v52h-8zM112,78h8v24h-8z" />
+
+    <!-- Minimalist K-mark / Audio Ring (right) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="4"
+        android:pathData="M210,90m-34,0a34,34 0,1 1,68 0a34,34 0,1 1,-68 0" />
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M210,90m-10,0a10,10 0,1 1,20 0a10,10 0,1 1,-20 0" />
+</vector>
