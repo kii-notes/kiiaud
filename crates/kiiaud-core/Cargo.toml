@@ -16,4 +16,6 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 parking_lot.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
 

@@ -10,6 +10,8 @@
 //! 2. **Oboe / AAudio Fallback**:
 //!    For device built-in speakers, headphone jacks, or Bluetooth audio.
 
+#[cfg(target_os = "android")]
+pub mod aaudio;
 pub mod jni;
 pub mod usb;
 pub mod usb_output;
@@ -31,6 +33,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AndroidAudioFormat {
     I16,
+    I24Packed,
     I24In32,
     I32,
     F32,
@@ -40,6 +43,7 @@ impl AndroidAudioFormat {
     pub fn bytes_per_sample(self) -> usize {
         match self {
             Self::I16 => 2,
+            Self::I24Packed => 3,
             Self::I24In32 | Self::I32 | Self::F32 => 4,
         }
     }
@@ -92,6 +96,8 @@ pub struct AndroidAudioOutput {
     dop_scratch: Vec<i32>,
     byte_scratch: Vec<u8>,
     usb_backend: Option<AndroidUsbAudioOutput>,
+    #[cfg(target_os = "android")]
+    aaudio_stream: Option<aaudio::AAudioStreamHandle>,
 }
 
 impl AndroidAudioOutput {
@@ -118,6 +124,8 @@ impl AndroidAudioOutput {
             dop_scratch: Vec::new(),
             byte_scratch: Vec::new(),
             usb_backend,
+            #[cfg(target_os = "android")]
+            aaudio_stream: None,
         }
     }
 
@@ -226,7 +234,68 @@ impl AudioOutput for AndroidAudioOutput {
         };
 
         // When configured for bit_perfect, request Exclusive mode from Android HAL
-        self.is_exclusive = self.config.bit_perfect;
+        #[cfg(target_os = "android")]
+        let (negotiated_format, hw_fmt, is_exclusive) = {
+            let (req_rate, req_channels) = match negotiated_format {
+                AudioFormat::Pcm {
+                    sample_rate,
+                    channels,
+                    ..
+                } => (sample_rate, channels),
+                AudioFormat::Dsd { rate, channels, .. } => (rate.dop_pcm_rate_hz(), channels),
+            };
+
+            let stream = aaudio::AAudioStreamHandle::open(
+                req_rate,
+                req_channels,
+                hw_fmt,
+                self.config.bit_perfect,
+                self.config.buffer_time_ms,
+            )?;
+
+            let actual_hw_fmt = stream.hw_format;
+            let actual_exclusive = stream.exclusive;
+            let actual_rate = stream.sample_rate;
+            let actual_channels = stream.channels;
+            self.aaudio_stream = Some(stream);
+
+            let final_fmt = match negotiated_format {
+                AudioFormat::Pcm { .. } => {
+                    let (bits_per_sample, sample_format) = match actual_hw_fmt {
+                        AndroidAudioFormat::I16 => (16, SampleFormat::S16Le),
+                        AndroidAudioFormat::I24Packed => (24, SampleFormat::S24_3Le),
+                        AndroidAudioFormat::I24In32 => (24, SampleFormat::S24Le),
+                        AndroidAudioFormat::I32 => (32, SampleFormat::S32Le),
+                        AndroidAudioFormat::F32 => (32, SampleFormat::F32Le),
+                    };
+                    AudioFormat::Pcm {
+                        sample_rate: actual_rate,
+                        channels: actual_channels,
+                        bits_per_sample,
+                        sample_format,
+                    }
+                }
+                AudioFormat::Dsd {
+                    rate,
+                    bit_order,
+                    layout,
+                    ..
+                } => AudioFormat::Dsd {
+                    rate,
+                    channels: actual_channels,
+                    transport: DsdTransport::DoP,
+                    bit_order,
+                    layout,
+                },
+            };
+
+            (final_fmt, actual_hw_fmt, actual_exclusive)
+        };
+
+        #[cfg(not(target_os = "android"))]
+        let is_exclusive = self.config.bit_perfect;
+
+        self.is_exclusive = is_exclusive;
         self.active_format = Some(negotiated_format);
         self.hw_format = Some(hw_fmt);
         self.is_playing = true;
@@ -267,15 +336,31 @@ impl AudioOutput for AndroidAudioOutput {
             }
         }
 
-        // Push encoded bytes into the audio ring buffer for Oboe callback consumption
-        self.ring_buffer.push(&self.byte_scratch);
+        #[cfg(target_os = "android")]
+        {
+            if let Some(stream) = self.aaudio_stream.as_mut() {
+                return stream.write_all(&self.byte_scratch);
+            }
+            return Err(KiiaudError::Output(
+                "AAudio stream is not open".to_owned(),
+            ));
+        }
 
-        Ok(buffer.frames())
+        #[cfg(not(target_os = "android"))]
+        {
+            // Push encoded bytes into the audio ring buffer for unit tests on non-Android hosts
+            self.ring_buffer.push(&self.byte_scratch);
+            Ok(buffer.frames())
+        }
     }
 
     fn pause(&mut self) -> Result<()> {
         if let Some(usb) = self.usb_backend.as_mut() {
             return usb.pause();
+        }
+        #[cfg(target_os = "android")]
+        if let Some(stream) = self.aaudio_stream.as_mut() {
+            stream.pause()?;
         }
         self.is_playing = false;
         Ok(())
@@ -285,6 +370,10 @@ impl AudioOutput for AndroidAudioOutput {
         if let Some(usb) = self.usb_backend.as_mut() {
             return usb.resume();
         }
+        #[cfg(target_os = "android")]
+        if let Some(stream) = self.aaudio_stream.as_mut() {
+            stream.resume()?;
+        }
         self.is_playing = true;
         Ok(())
     }
@@ -293,6 +382,10 @@ impl AudioOutput for AndroidAudioOutput {
         if let Some(usb) = self.usb_backend.as_mut() {
             return usb.drain();
         }
+        #[cfg(target_os = "android")]
+        if let Some(stream) = self.aaudio_stream.as_mut() {
+            stream.flush()?;
+        }
         self.ring_buffer.clear();
         Ok(())
     }
@@ -300,6 +393,10 @@ impl AudioOutput for AndroidAudioOutput {
     fn stop(&mut self) -> Result<()> {
         if let Some(usb) = self.usb_backend.as_mut() {
             let _ = usb.stop();
+        }
+        #[cfg(target_os = "android")]
+        {
+            self.aaudio_stream = None;
         }
         self.is_playing = false;
         self.active_format = None;
@@ -361,6 +458,13 @@ pub fn pack_i32_to_android_bytes(
                 out.extend_from_slice(&s16.to_le_bytes());
             }
         }
+        AndroidAudioFormat::I24Packed => {
+            out.reserve(samples.len() * 3);
+            for &s in samples {
+                let bytes = s.to_le_bytes();
+                out.extend_from_slice(&bytes[1..4]);
+            }
+        }
         AndroidAudioFormat::I24In32 | AndroidAudioFormat::I32 => {
             out.reserve(samples.len() * 4);
             for &s in samples {
@@ -397,6 +501,14 @@ pub fn pack_f32_to_android_bytes(
                 let clamped = s.clamp(-1.0, 1.0);
                 let i = (clamped * 2_147_483_647.0) as i32;
                 out.extend_from_slice(&i.to_le_bytes());
+            }
+        }
+        AndroidAudioFormat::I24Packed => {
+            out.reserve(samples.len() * 3);
+            for &s in samples {
+                let clamped = s.clamp(-1.0, 1.0);
+                let i = (clamped * 2_147_483_647.0) as i32;
+                out.extend_from_slice(&i.to_le_bytes()[1..4]);
             }
         }
         AndroidAudioFormat::I16 => {

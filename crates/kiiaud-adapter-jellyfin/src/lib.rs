@@ -153,6 +153,7 @@ pub async fn run_jellyfin_adapter(
     );
 
     let client = reqwest::Client::builder()
+        .tls_backend_preconfigured(kiiaud_core::tls::webpki_rustls_config())
         .timeout(Duration::from_secs(10))
         .build()
         .expect("failed to build reqwest client");

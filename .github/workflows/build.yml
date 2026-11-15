@@ -15,6 +15,7 @@ on:
           - windows-x86_64
           - android-arm64
           - android-armv7
+          - android-apk
   workflow_call:
     inputs:
       target:
@@ -316,7 +317,7 @@ jobs:
   # ----------------------------------------------------------------------------
   build-android-arm64:
     name: Build Android ARM64
-    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'android-arm64' }}
+    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'android-arm64' || inputs.target == 'android-apk' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -380,8 +381,8 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Build Android release binaries
-        run: cargo build --release --target aarch64-linux-android --bin kiiaud --bin kiiaudctl
+      - name: Build Android release binaries & JNI library
+        run: cargo build --release --target aarch64-linux-android --bin kiiaud --bin kiiaudctl --lib -p kiiaud
 
       - name: Package artifacts
         shell: bash
@@ -393,6 +394,12 @@ jobs:
           ARCHIVE_NAME="kiiaud-${VERSION}-android-arm64.tar.gz"
           tar -czvf "${ARCHIVE_NAME}" -C dist .
           sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload JNI library for Universal APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-jnilib-arm64-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: target/aarch64-linux-android/release/libkiiaud_android.so
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -408,7 +415,7 @@ jobs:
   # ----------------------------------------------------------------------------
   build-android-armv7:
     name: Build Android ARMv7 (32-bit)
-    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'android-armv7' }}
+    if: ${{ (inputs.target || 'all') == 'all' || inputs.target == 'android-armv7' || inputs.target == 'android-apk' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -472,8 +479,8 @@ jobs:
         with:
           targets: armv7-linux-androideabi
 
-      - name: Build Android 32-bit release binaries
-        run: cargo build --release --target armv7-linux-androideabi --bin kiiaud --bin kiiaudctl
+      - name: Build Android 32-bit release binaries & JNI library
+        run: cargo build --release --target armv7-linux-androideabi --bin kiiaud --bin kiiaudctl --lib -p kiiaud
 
       - name: Package artifacts
         shell: bash
@@ -486,6 +493,12 @@ jobs:
           tar -czvf "${ARCHIVE_NAME}" -C dist .
           sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
 
+      - name: Upload JNI library for Universal APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-jnilib-armv7-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: target/armv7-linux-androideabi/release/libkiiaud_android.so
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -493,4 +506,91 @@ jobs:
           path: |
             kiiaud-*-android-armv7.tar.gz
             kiiaud-*-android-armv7.tar.gz.sha256
+            build-metadata.json
+
+  # ----------------------------------------------------------------------------
+  # 6. Android Universal Companion APK (arm64-v8a + armeabi-v7a, Mobile & TV)
+  # ----------------------------------------------------------------------------
+  build-android-apk:
+    name: Build Android Universal APK
+    needs: [build-android-arm64, build-android-armv7]
+    if: ${{ !failure() && !cancelled() && ((inputs.target || 'all') == 'all' || inputs.target == 'android-apk') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          VER="${{ inputs.version }}"
+          if [ -z "${VER}" ]; then
+            VER="${SHORT_SHA}"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          cat <<EOF > build-metadata.json
+          {
+            "platform": "android",
+            "architecture": "universal-apk",
+            "abis": ["arm64-v8a", "armeabi-v7a"],
+            "version": "${VER}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "ref": "${GITHUB_REF}",
+            "ref_name": "${GITHUB_REF_NAME}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Download ARM64 JNI library
+        uses: actions/download-artifact@v4
+        with:
+          name: android-jnilib-arm64-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: android/app/src/main/jniLibs/arm64-v8a
+
+      - name: Download ARMv7 JNI library
+        uses: actions/download-artifact@v4
+        with:
+          name: android-jnilib-armv7-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: android/app/src/main/jniLibs/armeabi-v7a
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build Universal Release APK
+        run: gradle -p android assembleRelease --no-daemon
+
+      - name: Package APK artifact
+        shell: bash
+        run: |
+          APK_SRC="android/app/build/outputs/apk/release/app-release.apk"
+          APK_NAME="kiiaud-${VERSION}-android-universal.apk"
+          cp "${APK_SRC}" "${APK_NAME}"
+          sha256sum "${APK_NAME}" > "${APK_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix || 'build' }}-android-apk-${{ env.SHORT_SHA }}-${{ github.run_id }}
+          path: |
+            kiiaud-*-android-universal.apk
+            kiiaud-*-android-universal.apk.sha256
             build-metadata.json

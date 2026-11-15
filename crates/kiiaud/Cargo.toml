@@ -10,6 +10,11 @@ description.workspace = true
 name = "kiiaud"
 path = "src/main.rs"
 
+[lib]
+name = "kiiaud_android"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
+
 [lints]
 workspace = true
 
@@ -33,6 +38,10 @@ libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 kiiaud-output-alsa.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+kiiaud-output-android.workspace = true
+jni = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 kiiaud-output = { workspace = true }

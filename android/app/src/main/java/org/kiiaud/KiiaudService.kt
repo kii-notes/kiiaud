@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import java.io.File
 
 class KiiaudService : Service() {
 
@@ -28,10 +29,24 @@ class KiiaudService : Service() {
         private const val TAG = "KiiaudService"
         const val CHANNEL_ID = "kiiaud_playback_channel"
         const val NOTIFICATION_ID = 1001
+        const val PREFS_NAME = "kiiaud_prefs"
+        const val KEY_BACKEND = "audio_backend"
 
         @Volatile
         var isServiceRunning = false
             private set
+
+        fun getConfigFile(context: Context): File = File(context.filesDir, "config.toml")
+
+        fun getSelectedBackend(context: Context): String {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            return prefs.getString(KEY_BACKEND, "auto") ?: "auto"
+        }
+
+        fun setSelectedBackend(context: Context, backend: String) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putString(KEY_BACKEND, backend).apply()
+        }
     }
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -87,6 +102,21 @@ class KiiaudService : Service() {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
             startForeground(NOTIFICATION_ID, notification)
+        }
+
+        // 5. Start the Rust kiiaud daemon in-process
+        val configFile = getConfigFile(this)
+        val backend = getSelectedBackend(this)
+        val rc = KiiaudNative.startDaemon(configFile.absolutePath, backend)
+        Log.i(TAG, "KiiaudNative.startDaemon(config=${configFile.absolutePath}, backend=$backend) -> $rc")
+
+        // 6. Auto-attach already-permitted USB DAC if backend allows USB
+        if (backend != "android") {
+            val dacs = usbDacManager.scanDacDevices()
+            val permitted = dacs.firstOrNull { it.isAudioStreaming && it.isPermissionGranted }
+            if (permitted != null && usbDacManager.connectDac(permitted.device)) {
+                updateNotification("Connected: ${permitted.name} (Bit-Perfect)")
+            }
         }
 
         Log.i(TAG, "Kiiaud Foreground Service initialized")
@@ -145,6 +175,7 @@ class KiiaudService : Service() {
         } catch (_: Exception) {}
 
         usbDacManager.disconnectDac()
+        KiiaudNative.stopDaemon()
         wakeLock?.release()
         wifiLock?.release()
         super.onDestroy()

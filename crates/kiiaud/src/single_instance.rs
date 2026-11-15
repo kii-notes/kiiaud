@@ -59,7 +59,7 @@ impl Drop for SingleInstanceGuard {
 
 #[cfg(unix)]
 pub struct SingleInstanceGuard {
-    file: std::fs::File,
+    file: Option<std::fs::File>,
     path: std::path::PathBuf,
 }
 
@@ -72,21 +72,37 @@ impl SingleInstanceGuard {
 
         let sanitized = name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_");
         let lock_dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .or_else(|| std::env::var_os("TMPDIR"))
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
 
         let lock_path = lock_dir.join(format!("kiiaud_{sanitized}.lock"));
 
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
             .open(&lock_path)
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to open lock file '{}': {e}", lock_path.display())
-            })?;
+        {
+            Ok(f) => f,
+            Err(e)
+                if cfg!(target_os = "android")
+                    && e.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                return Ok(Self {
+                    file: None,
+                    path: lock_path,
+                });
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to open lock file '{}': {e}",
+                    lock_path.display()
+                ));
+            }
+        };
 
         let fd = file.as_raw_fd();
         let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
@@ -116,7 +132,7 @@ impl SingleInstanceGuard {
         let _ = file.flush();
 
         Ok(Self {
-            file,
+            file: Some(file),
             path: lock_path,
         })
     }
@@ -125,12 +141,14 @@ impl SingleInstanceGuard {
 #[cfg(unix)]
 impl Drop for SingleInstanceGuard {
     fn drop(&mut self) {
-        use std::os::unix::io::AsRawFd;
-        let fd = self.file.as_raw_fd();
-        unsafe {
-            let _ = libc::flock(fd, libc::LOCK_UN);
+        if let Some(ref file) = self.file {
+            use std::os::unix::io::AsRawFd;
+            let fd = file.as_raw_fd();
+            unsafe {
+                let _ = libc::flock(fd, libc::LOCK_UN);
+            }
+            let _ = std::fs::remove_file(&self.path);
         }
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 

@@ -876,6 +876,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "jni",
  "kiiaud-adapter-cli",
  "kiiaud-adapter-jellyfin",
  "kiiaud-adapter-lms",
@@ -884,6 +885,7 @@ dependencies = [
  "kiiaud-core",
  "kiiaud-output",
  "kiiaud-output-alsa",
+ "kiiaud-output-android",
  "kiiaud-output-asio",
  "kiiaud-output-wasapi",
  "kiiaud-playback",
@@ -978,12 +980,14 @@ name = "kiiaud-core"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "toml",
  "tracing",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
