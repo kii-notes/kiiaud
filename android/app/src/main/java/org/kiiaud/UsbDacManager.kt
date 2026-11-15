@@ -114,22 +114,23 @@ class UsbDacManager(private val context: Context) {
         }
 
         var streamingIface: UsbInterface? = null
-        var bestAltSetting = 1
 
         // Claim AudioControl and AudioStreaming interfaces
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
             connection.claimInterface(iface, true)
-            if (iface.interfaceClass == UsbConstants.USB_CLASS_AUDIO && iface.interfaceSubclass == 2) {
+            if (iface.interfaceClass == UsbConstants.USB_CLASS_AUDIO &&
+                iface.interfaceSubclass == 2 &&
+                iface.alternateSetting > 0 &&
+                streamingIface == null
+            ) {
                 streamingIface = iface
-                // Select alt setting with highest bit resolution (usually Alt 2 or 3 for 24/32-bit)
-                bestAltSetting = if (iface.alternateSettingCount > 2) 2 else 1
             }
         }
 
-        // Bug 3 Fix: Allocate ISO bandwidth in Linux xHCI scheduler via Java API
+        // Allocate ISO bandwidth in Linux xHCI scheduler via Android UsbDeviceConnection
         streamingIface?.let {
-            connection.setInterface(it, bestAltSetting)
+            connection.setInterface(it)
         }
 
         val fd = connection.fileDescriptor
