@@ -382,7 +382,9 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Build Android release binaries & JNI library
-        run: cargo build --release --target aarch64-linux-android --bin kiiaud --bin kiiaudctl --lib -p kiiaud
+        run: |
+          cargo build --release --target aarch64-linux-android --bin kiiaud --bin kiiaudctl
+          cargo build --release --target aarch64-linux-android --lib -p kiiaud
 
       - name: Package artifacts
         shell: bash
@@ -480,7 +482,9 @@ jobs:
           targets: armv7-linux-androideabi
 
       - name: Build Android 32-bit release binaries & JNI library
-        run: cargo build --release --target armv7-linux-androideabi --bin kiiaud --bin kiiaudctl --lib -p kiiaud
+        run: |
+          cargo build --release --target armv7-linux-androideabi --bin kiiaud --bin kiiaudctl
+          cargo build --release --target armv7-linux-androideabi --lib -p kiiaud
 
       - name: Package artifacts
         shell: bash
