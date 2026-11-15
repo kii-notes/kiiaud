@@ -243,7 +243,7 @@ mod android_jni {
         _env: EnvUnowned<'_>,
         _class: JClass<'_>,
     ) -> jboolean {
-        u8::from(DAEMON_RUNNING.load(Ordering::SeqCst))
+        DAEMON_RUNNING.load(Ordering::SeqCst)
     }
 
     #[unsafe(no_mangle)]
@@ -276,6 +276,6 @@ mod android_jni {
         _env: EnvUnowned<'_>,
         _class: JClass<'_>,
     ) -> jboolean {
-        u8::from(kiiaud_output_android::get_active_usb_fd().is_some())
+        kiiaud_output_android::get_active_usb_fd().is_some()
     }
 }
