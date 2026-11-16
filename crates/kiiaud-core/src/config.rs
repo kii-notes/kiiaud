@@ -5,129 +5,9 @@ use crate::format::DsdMode;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Template configuration file with rich explanatory comments.
-pub const DEFAULT_CONFIG_TEMPLATE: &str = r#"# ==============================================================================
-# kiiaud — Bit-Perfect Network Audio Playback Daemon Configuration
-# ==============================================================================
-# Documentation: docs/CONFIGURATION.md
-# Hierarchy: /etc/kiiaud/config.toml (system) < ~/.config/kiiaud/config.toml (user)
-
-[daemon]
-# Friendly network endpoint identifier displayed in logs and service discovery.
-name = "kiiaud-endpoint"
-
-# Unix domain socket path used for local CLI IPC control (`kiiaudctl`).
-# Recommendation: For per-user daemon, use an isolated path like "/tmp/kiiaud.sock"
-# or "$XDG_RUNTIME_DIR/kiiaud.sock". For system daemon, use "/run/kiiaud/kiiaud.sock".
-socket_path = "/tmp/kiiaud.sock"
-
-# Log verbosity level: "trace", "debug", "info", "warn", "error".
-log_level = "info"
-
-[output]
-# Audio output backend:
-#   - "alsa": Linux direct ALSA hardware transport (recommended for bit-perfect Hi-Fi)
-#   - "wasapi": Windows Exclusive WASAPI transport
-#   - "asio": Windows ASIO driver transport with Native 1-bit DSD support
-#   - "android-usb" / "usb": Android Direct USB UAC2 Bit-Perfect backend (bypasses AudioFlinger & ALSA)
-#   - "android" / "oboe": Android direct AudioTrack / AAudio
-#   - "mock" / "null": Headless dummy output for testing and CI
-backend = "alsa"
-
-# Audio output device identifier.
-# On Linux ALSA:
-#   - Use direct hardware card syntax to bypass PulseAudio / PipeWire software mixing:
-#     e.g., "hw:CARD=Audio,DEV=0" (card by name) or "hw:0,0" (card by index).
-#   - Run `aplay -l` to discover your audio card and subdevice names.
-# On Windows WASAPI / ASIO:
-#   - Device name substring (e.g. "SXW UAD ASIO", "DAC", "UAD") or "default" for primary device.
-device = "hw:CARD=Audio,DEV=0"
-
-# Enforce bit-perfect transport:
-#   - When true: Disables software resampling, format conversions, and software volume DSP.
-#   - The DAC is always configured at the exact source sample rate and bit depth.
-bit_perfect = true
-
-# DSD (Direct Stream Digital) playback transport mode:
-#   - "auto": Probes Native DSD (DSD_U32_BE / DSD_U32_LE). If unsupported by ALSA DAC,
-#             automatically falls back to DoP (DSD over PCM). Never converts to PCM silently.
-#   - "native": Strict Native DSD only. Fails with error if DAC lacks native DSD support.
-#   - "dop": Strict DoP framing inside 24/32-bit PCM frames.
-dsd_mode = "auto"
-
-# Hardware ring buffer size in milliseconds (default: 200ms).
-buffer_time_ms = 200
-
-# ALSA period time (hardware interrupt interval) in milliseconds (default: 40ms).
-period_time_ms = 40
-
-# Optional hardware mixer control name for analog volume adjustment (e.g., "PCM" or "Master").
-# Leave commented out or unset to keep hardware mixer untouched for purest 100% bit-perfect signal.
-# hardware_mixer = "PCM"
-
-[security]
-# Allowed filesystem directory roots for local playback via CLI/WebUI.
-# Example: allowed_roots = ["/media/music", "/home/music/DSD"]
-# Leave empty (`[]`) to allow any non-system regular file on the system.
-allowed_roots = []
-
-# ------------------------------------------------------------------------------
-# Protocol Adapters
-# ------------------------------------------------------------------------------
-
-[adapter.web]
-# Embedded lightweight WebUI & HTTP REST/SSE API for browser control.
-enabled = true
-listen = "0.0.0.0:7110"
-
-[adapter.mpd]
-# Music Player Daemon (MPD) protocol emulation server.
-# Allows controlling kiiaud from any standard MPD client (ncmpcpp, Cantata, MAFA, etc.).
-enabled = false
-listen = "0.0.0.0:6600"
-
-[adapter.jellyfin]
-# Jellyfin "Play To" / Remote Control Endpoint (Cast target).
-# When enabled, kiiaud authenticates with your Jellyfin server via WebSocket and appears
-# directly in the "Cast / Play On" device menu in Jellyfin Web & Mobile apps.
-enabled = false
-server_url = "http://jellyfin.local:8096"
-
-# Authentication: You can use an API Key OR a Username + Password.
-# api_key = "your_jellyfin_api_key_here"
-# username = "your_username"
-# password = "your_password"
-
-# Identifier and display name shown in Jellyfin client UI:
-device_id = "kiiaud-endpoint-01"
-device_name = "kiiaud Hi-Fi Endpoint"
-
-[adapter.lms]
-# Logitech Media Server (LMS / Lyrion) SlimProto client adapter (LAN direct).
-# Emulates a hardware Squeezebox player, connecting directly to local LMS server over TCP port 3483.
-enabled = false
-server_host = "192.168.1.100"
-server_port = 3483
-http_port = 9000
-player_name = "kiiaud (LAN)"
-dsd_support = false
-max_sample_rate = 192000
-mac_address = [2, 75, 73, 73, 65, 85]
-
-[adapter.lag]
-# Lyrion Anywhere (Gateway) adapter.
-# Connects securely to a remote Lyrion Anywhere Gateway over HTTPS / WebSocket tunnel.
-enabled = false
-gateway_url = "https://music.example.com"
-gateway_quality = "original" # "original" (bit-perfect passthrough), "high" (Opus 160k), or "low" (Opus 96k)
-player_name = "kiiaud (LAG)"
-dsd_support = false
-max_sample_rate = 192000
-# gateway_username = ""
-# gateway_password = ""
-# gateway_refresh_token = ""
-# gateway_device_name = ""
-"#;
+/// Template configuration file with rich explanatory comments, embedded at compile time.
+pub const DEFAULT_CONFIG_TEMPLATE: &str =
+    include_str!("../../../contrib/kiiaud.toml.example");
 
 /// Information about where configuration was loaded from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,12 +74,54 @@ pub struct KiiaudConfig {
 
 impl Default for KiiaudConfig {
     fn default() -> Self {
-        Self {
-            daemon: DaemonConfig::default(),
-            output: OutputConfig::default(),
-            security: SecurityConfig::default(),
-            adapter: AdaptersConfig::default(),
+        // Deserialize into a private helper without #[serde(default)] on the
+        // outer struct to avoid re-entrantly calling KiiaudConfig::default()
+        // while BASE_DEFAULT is initializing.
+        #[derive(Deserialize)]
+        struct RawKiiaudConfig {
+            #[serde(default)]
+            daemon: DaemonConfig,
+            #[serde(default)]
+            output: OutputConfig,
+            #[serde(default)]
+            security: SecurityConfig,
+            #[serde(default)]
+            adapter: AdaptersConfig,
         }
+
+        static BASE_DEFAULT: std::sync::OnceLock<KiiaudConfig> = std::sync::OnceLock::new();
+        #[allow(unused_mut)]
+        let mut cfg = BASE_DEFAULT
+            .get_or_init(|| {
+                let raw: RawKiiaudConfig = toml::from_str(DEFAULT_CONFIG_TEMPLATE)
+                    .expect("embedded contrib/kiiaud.toml.example must be valid TOML");
+                KiiaudConfig {
+                    daemon: raw.daemon,
+                    output: raw.output,
+                    security: raw.security,
+                    adapter: raw.adapter,
+                }
+            })
+            .clone();
+
+        #[cfg(target_os = "windows")]
+        {
+            cfg.output.backend = "wasapi".to_owned();
+            cfg.output.device = "default".to_owned();
+        }
+        #[cfg(target_os = "android")]
+        {
+            cfg.daemon.socket_path = PathBuf::from("@kiiaud.sock");
+            cfg.output.backend = "android".to_owned();
+            cfg.output.device = "default".to_owned();
+        }
+        #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+        {
+            cfg.output.buffer_time_ms = 600;
+            cfg.output.period_time_ms = 100;
+        }
+
+        cfg
     }
 }
 

@@ -275,6 +275,22 @@ fn test_default_config_template_is_valid() {
     assert!(cfg.adapter.web.enabled);
     assert!(!cfg.adapter.mpd.enabled);
     assert!(!cfg.adapter.jellyfin.enabled);
+
+    let default_cfg = KiiaudConfig::default();
+    assert_eq!(default_cfg.daemon.name, cfg.daemon.name);
+    assert_eq!(default_cfg.adapter.web.listen, cfg.adapter.web.listen);
+    assert_eq!(
+        default_cfg.adapter.jellyfin.device_id,
+        cfg.adapter.jellyfin.device_id
+    );
+    assert_eq!(
+        default_cfg.adapter.lms.player_name,
+        cfg.adapter.lms.player_name
+    );
+    assert_eq!(
+        default_cfg.adapter.lag.player_name,
+        cfg.adapter.lag.player_name
+    );
 }
 
 #[test]
