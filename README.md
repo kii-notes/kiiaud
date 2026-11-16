@@ -102,7 +102,8 @@ Jellyfin, LMS (LAN), Lyrion Anywhere Gateway (LAG), MPD, WebUI, and CLI are modu
   - **LMS (Lyrion Music Server & Lyrion Anywhere Gateway)**: SlimProto client supporting both direct LAN (`DirectTcp`) and remote HTTPS/WSS gateway tunneling (`AnywhereWs`, Protocol v2) with interactive WebUI pairing/login, DSD-first capability negotiation, and bit-perfect `original` stream passthrough.
   - **MPD**: Lightweight control protocol for standard MPD clients without needing an MPD database.
   - **CLI & Local IPC**: Cross-platform control (`kiiaudctl`) via Unix domain sockets on Linux and local loopback TCP on Windows.
-- **Native Android Companion App (`android/`)**: Lightweight Kotlin application managing USB permissions, USB DAC hot-plugging, wake locks, and foreground audio service.
+- **Native Android Companion App (`android/`)**: Universal Kotlin application supporting both **phones/tablets** and **Android TV / Google TV** (`LEANBACK_LAUNCHER` + D-Pad UI, bundling `armeabi-v7a` and `arm64-v8a`), managing USB permissions, USB DAC hot-plugging, wake locks, foreground audio service, and `AAudio` (`android`) / Direct USB (`android-usb`) selection.
+- **Resilient Streaming & Auto-Release**: Dynamic HTTP stream pre-buffering (`stream_buffer_mb`, auto-scaling ~8s in `8–64 MiB`), ALSA `EPIPE` xrun telemetry & `ENODEV` auto-recovery, embedded `webpki-roots` TLS, and automatic hardware DAC release on stop/pause.
 - **Database-free & Minimal Storage I/O**: Zero database transactions during playback; protects SD cards on embedded hardware.
 - **In-memory Runtime Queue**: Queue and player state reside purely in memory.
 - **Gapless Playback**: Pre-buffering track transitions to eliminate gaps between contiguous tracks.
@@ -156,7 +157,7 @@ Automated GitHub Actions CI/CD publishes multi-arch packages for every release:
 - **Linux x86_64**: `kiiaud-<version>-linux-x86_64.tar.gz`
 - **Linux ARM64**: `kiiaud-<version>-linux-arm64.tar.gz` (Raspberry Pi 4/5, Armbian, Radxa)
 - **Windows x86_64**: `kiiaud-<version>-windows-x86_64.zip` (MSVC build with ASIO, WASAPI & System Tray)
-- **Android ARM64**: `kiiaud-<version>-android-arm64.tar.gz` (`aarch64-linux-android`) & Android companion APK
+- **Android ARM64 / ARMv7 & Universal APK**: `kiiaud-<version>-android-arm64.tar.gz`, `kiiaud-<version>-android-armv7.tar.gz`, and `kiiaud-<version>-android-universal.apk` (Universal Mobile + Android TV / Google TV APK bundling `arm64-v8a` & `armeabi-v7a`)
 
 ### Local Build
 ```bash

@@ -197,8 +197,9 @@ In `kiiaud`, **bit-perfect playback is treated as a capability of the output bac
 ### 9.1 ALSA Output Pipeline (Linux)
 - Opens hardware devices directly via ALSA `hw:CARD,DEV` (bypassing `plughw`, `dmix`, and software resamplers).
 - Disables software volume attenuation (hardware volume or fixed 100% bit-transparent passthrough).
-- Configures ALSA buffer and period sizes to guarantee jitter-free, underrun-free streaming.
-- Re-configures ALSA hardware parameters on track sample rate/format changes.
+- Configures ALSA buffer and period sizes (`200/40 ms` on x86_64, `600/100 ms` on ARM/ARM64 SBCs) to guarantee jitter-free, underrun-free streaming.
+- Logs `StreamTelemetry` (`stream_buffer_bytes`, `stream_buffer_capacity`, `%`) on `EPIPE` xruns, and performs automatic backoff re-open on `ENODEV (19)` hardware disconnect.
+- Re-configures ALSA hardware parameters on track sample rate/format changes and releases the hardware handle on stop/pause.
 
 ### 9.2 WASAPI Exclusive Mode Pipeline (Windows)
 - Opens audio endpoints in `AUDCLNT_SHAREMODE_EXCLUSIVE` mode, completely bypassing the Windows Audio Engine mixer, APOs, and software volume limiter.
@@ -224,11 +225,10 @@ In `kiiaud`, **bit-perfect playback is treated as a capability of the output bac
 - **Continuous Async Clock Feedback**: Reads isochronous feedback endpoint (Q16.16 format) to dynamically adjust frames per microframe (`calibrated_fpmf`), preventing clock drift and buffer clicks.
 - **Companion Integration**: Receives allocated USB device file descriptor (`fd:XX`) directly from the companion Android app's `UsbManager`.
 
-### 9.5 Android Oboe / AAudio Pipeline (`android` / `oboe`)
-- **Oboe / AAudio HAL**: Leverages AAudio (Android 8.1+) with fallback to OpenSL ES for streaming to internal audio hardware or generic endpoints.
-- **Push-to-Pull Bridge**: Lock-free ring buffer bridges the playback engine's synchronous `write()` thread to Oboe's asynchronous real-time audio callback thread.
-- **Exclusive vs Shared Mode**: If configured for `bit_perfect = true`, requests `SharingMode::Exclusive` and `PerformanceMode::LowLatency`. If the HAL falls back to `SharingMode::Shared`, capability reporting flags `bit_perfect = false` and signals that the stream is routed through the system mixer.
-- **DoP for DSD**: Converts DSF, DFF, and WavPack DSD tracks to DoP frames for bit-perfect transmission over PCM.
+### 9.5 Android AAudio Pipeline (`android` / `oboe`)
+- **Native `libaaudio.so` Bindings (`aaudio.rs`)**: Dynamically loads Android's native `libaaudio.so` (Android 8.0+ / API 26+) for hardware-clock-paced blocking PCM writes (`PCM_I16`, `PCM_I24_PACKED`, `PCM_I32`, `PCM_FLOAT`).
+- **Exclusive vs Shared Mode**: When `bit_perfect = true`, attempts `SharingMode::Exclusive` and `PerformanceMode::LowLatency`, automatically falling back to `SharingMode::Shared` if the HAL rejects exclusive mode (accurately updating `OutputCapabilities` so the WebUI reflects whether the stream is direct or mixed).
+- **Auto-Release & TLS**: Automatically releases the audio device on stop/pause so other Android/TV apps can use the output, and pairs with `webpki-roots` (`crates/kiiaud-core/src/tls.rs`) so `https://` / `wss://` streams work in both APK and standalone CLI modes without `rustls-platform-verifier` JNI initialization panics.
 
 ---
 
